@@ -40,7 +40,11 @@ export function ServerQuickActions({ server, onUpdated, onCopy, children }: {
       const actions = { start: api.startServer, stop: api.stopServer, restart: api.restartServer, kill: api.killServer };
       onUpdated(await actions[action](server.id));
     } catch (err) {
-      setError(err instanceof ApiError ? err.detail : `Could not ${action} the server. Try again.`);
+      if (err instanceof ApiError && (err.code === 'world_busy' || err.detail.toLowerCase().includes('busy') || err.detail.toLowerCase().includes('backup'))) {
+        setError('Server is currently backing up. Power controls will resume once it completes.');
+      } else {
+        setError(err instanceof ApiError ? err.detail : `Could not ${action} the server. Try again.`);
+      }
     } finally {
       inFlight.current = false;
       setPending(null);

@@ -243,6 +243,70 @@ func (s *Server) handleRenameFile(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, entry)
 }
 
+func (s *Server) handleCopyFile(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		Source      string   `json:"source"`
+		Sources     []string `json:"sources"`
+		Destination string   `json:"destination"`
+	}
+	if err := decodeJSON(w, r, &input); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
+		return
+	}
+	if input.Destination == "" && len(input.Sources) == 0 && input.Source == "" {
+		writeError(w, http.StatusBadRequest, "invalid_request", "destination and source(s) required")
+		return
+	}
+	serverID := r.PathValue("id")
+	if len(input.Sources) > 0 {
+		entries, err := s.servers.CopyMultiple(serverID, input.Sources, input.Destination)
+		if err != nil {
+			s.writeFileErr(w, r, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"entries": entries, "count": len(entries)})
+		return
+	}
+	entry, err := s.servers.CopyFile(serverID, input.Source, input.Destination)
+	if err != nil {
+		s.writeFileErr(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"entry": entry, "entries": []servers.FileEntry{entry}})
+}
+
+func (s *Server) handleMoveFile(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		Source      string   `json:"source"`
+		Sources     []string `json:"sources"`
+		Destination string   `json:"destination"`
+	}
+	if err := decodeJSON(w, r, &input); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
+		return
+	}
+	if input.Destination == "" && len(input.Sources) == 0 && input.Source == "" {
+		writeError(w, http.StatusBadRequest, "invalid_request", "destination and source(s) required")
+		return
+	}
+	serverID := r.PathValue("id")
+	if len(input.Sources) > 0 {
+		entries, err := s.servers.MoveMultiple(serverID, input.Sources, input.Destination)
+		if err != nil {
+			s.writeFileErr(w, r, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"entries": entries, "count": len(entries)})
+		return
+	}
+	entry, err := s.servers.MoveFile(serverID, input.Source, input.Destination)
+	if err != nil {
+		s.writeFileErr(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"entry": entry, "entries": []servers.FileEntry{entry}})
+}
+
 // writeFileErr logs the underlying failure before mapping it to a friendly
 // response. Filesystem paths and low-level details stay in the backend logs.
 func (s *Server) writeFileErr(w http.ResponseWriter, r *http.Request, err error) {

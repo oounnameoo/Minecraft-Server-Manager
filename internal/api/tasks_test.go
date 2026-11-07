@@ -98,4 +98,24 @@ func TestHandleTaskProgress(t *testing.T) {
 	if !res2.Active || res2.Progress == nil || res2.Progress.Percent != 45 {
 		t.Fatalf("unexpected progress response: %+v", res2)
 	}
+
+	// 3. Test task cancel
+	called := false
+	serverStore.RegisterTaskCancel(srv.ID, func() {
+		called = true
+	})
+
+	reqCancel := httptest.NewRequest(http.MethodPost, "/api/servers/"+srv.ID+"/tasks/cancel", nil)
+	reqCancel.AddCookie(&http.Cookie{Name: auth.CookieName, Value: token})
+	reqCancel.AddCookie(&http.Cookie{Name: CSRFCookieName, Value: "test-csrf"})
+	reqCancel.Header.Set(csrfHeaderName, "test-csrf")
+	wCancel := httptest.NewRecorder()
+	apiServer.ServeHTTP(wCancel, reqCancel)
+
+	if wCancel.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", wCancel.Code, wCancel.Body.String())
+	}
+	if !called {
+		t.Errorf("expected task cancel callback to be invoked")
+	}
 }

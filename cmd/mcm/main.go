@@ -98,6 +98,9 @@ func main() {
 		Bucket:    cfg.S3.Bucket,
 		Region:    cfg.S3.Region,
 	}, cfg.DataDir, cfg.BackupDir)
+	if err := backupStore.RecoverInterrupted(context.Background()); err != nil {
+		logger.Printf("recover interrupted backups: %v", err)
+	}
 	backupStore.SetNotifier(notificationService)
 	backupStore.SetDataCoordinator(serverStore.WithStoppedData)
 	go backupStore.RunRetention(notificationCtx, logger)

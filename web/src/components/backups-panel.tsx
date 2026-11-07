@@ -42,6 +42,7 @@ export function BackupsPanel({ server }: { server: Server }) {
   const [activeProgress, setActiveProgress] = useState<BackupProgress | null>(null);
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const [uploadFileName, setUploadFileName] = useState<string | null>(null);
+  const [cancelling, setCancelling] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { confirm, dialog } = useModal();
 
@@ -73,8 +74,8 @@ export function BackupsPanel({ server }: { server: Server }) {
     // 1. Initial status query
     api.getBackupProgress(server.id).then((res) => {
       if (!unmounted && res.active && res.progress) {
-        setActiveProgress(res.progress);
         if (res.progress.stage !== 'completed' && res.progress.stage !== 'failed') {
+          setActiveProgress(res.progress);
           setBusy(true);
         }
       }
@@ -273,6 +274,27 @@ export function BackupsPanel({ server }: { server: Server }) {
     finally { await load(); setDeleting(null); }
   }
 
+  async function cancelActiveBackup() {
+    if (!(await confirm('Force cancel the active backup operation? Any partial archive will be removed and server locks will be released immediately.', {
+      title: 'Force cancel backup',
+      confirmLabel: 'Force cancel',
+      destructive: true,
+    }))) return;
+
+    setCancelling(true);
+    try {
+      await api.cancelBackup(server.id);
+      setActiveProgress(null);
+      setBusy(false);
+      await load();
+      setMessage('Operation force-cancelled.');
+    } catch (err) {
+      setError(err instanceof ApiError ? err.detail : 'Could not cancel operation');
+    } finally {
+      setCancelling(false);
+    }
+  }
+
   return (
     <>
       {dialog}
@@ -351,7 +373,21 @@ export function BackupsPanel({ server }: { server: Server }) {
                   <Loader2 className="h-4 w-4 animate-spin text-primary" />
                   <span className="capitalize">{activeProgress.operation}:</span> {activeProgress.message}
                 </span>
-                <span className="font-bold text-primary tabular-nums">{activeProgress.percent}%</span>
+                <div className="flex items-center gap-2">
+                  <span className="font-bold text-primary tabular-nums">{activeProgress.percent}%</span>
+                  {canManage && (
+                    <Button
+                      size="sm"
+                      variant="destructive"
+                      className="h-6 text-[11px] px-2 font-semibold"
+                      disabled={cancelling}
+                      onClick={() => void cancelActiveBackup()}
+                    >
+                      {cancelling && <Loader2 className="h-3 w-3 animate-spin mr-1" />}
+                      Force Cancel
+                    </Button>
+                  )}
+                </div>
               </div>
               <ProgressBar
                 value={activeProgress.percent}

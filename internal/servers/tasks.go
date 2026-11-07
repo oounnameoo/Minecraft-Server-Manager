@@ -103,3 +103,43 @@ func (s *Store) SubscribeTaskProgress(serverID string) (chan TaskProgress, func(
 	}
 	return ch, cancel
 }
+
+// RegisterTaskCancel stores a cancellation callback for an in-flight server task.
+func (s *Store) RegisterTaskCancel(serverID string, cancel func()) {
+	s.tasksMu.Lock()
+	defer s.tasksMu.Unlock()
+	if s.taskCancels == nil {
+		s.taskCancels = make(map[string]func())
+	}
+	s.taskCancels[serverID] = cancel
+}
+
+// UnregisterTaskCancel removes the recorded cancellation callback for a server task.
+func (s *Store) UnregisterTaskCancel(serverID string) {
+	s.tasksMu.Lock()
+	defer s.tasksMu.Unlock()
+	if s.taskCancels != nil {
+		delete(s.taskCancels, serverID)
+	}
+}
+
+// CancelTask force-cancels any in-flight task for a server.
+func (s *Store) CancelTask(serverID string) bool {
+	s.tasksMu.Lock()
+	cancel, ok := s.taskCancels[serverID]
+	if ok && cancel != nil {
+		delete(s.taskCancels, serverID)
+		cancel()
+	}
+	s.tasksMu.Unlock()
+	if ok {
+		s.SetTaskProgress(serverID, TaskProgress{
+			Operation: "task",
+			Stage:     "failed",
+			Percent:   100,
+			Message:   "Task force-cancelled by user.",
+			Error:     "cancelled",
+		})
+	}
+	return ok
+}

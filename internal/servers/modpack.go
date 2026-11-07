@@ -401,6 +401,10 @@ func (s *Store) InspectModpackFile(filePath string) (*ModpackManifest, error) {
 
 // InstallModpack installs a modpack from an archive file onto the specified server.
 func (s *Store) InstallModpack(ctx context.Context, serverID string, archivePath string, opts InstallModpackOpts) (installed *InstalledModpack, err error) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	s.RegisterTaskCancel(serverID, cancel)
+	defer s.UnregisterTaskCancel(serverID)
 	mu := s.lifecycleLock(serverID)
 	mu.Lock()
 	defer mu.Unlock()

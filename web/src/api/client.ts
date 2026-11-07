@@ -614,6 +614,11 @@ export const api = {
   getBackupProgress: (serverId: string) =>
     request<BackupProgressResponse>(`/api/servers/${serverId}/backups/progress`),
 
+  cancelBackup: (serverId: string) =>
+    request<{ ok: boolean; cancelled: boolean }>(`/api/servers/${serverId}/backups/cancel`, {
+      method: 'POST',
+    }),
+
   subscribeBackupEvents: (
     serverId: string,
     onProgress: (p: BackupProgress) => void,
@@ -639,6 +644,11 @@ export const api = {
 
   getTaskProgress: (serverId: string) =>
     request<TaskProgressResponse>(`/api/servers/${serverId}/tasks/progress`),
+
+  cancelTask: (serverId: string) =>
+    request<{ ok: boolean; cancelled: boolean }>(`/api/servers/${serverId}/tasks/cancel`, {
+      method: 'POST',
+    }),
 
   subscribeTaskEvents: (
     serverId: string,
@@ -809,6 +819,42 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ path, name }),
     }),
+
+  copyFile: (serverId: string, source: string, destination: string) =>
+    request<{ entry: FileEntry; entries?: FileEntry[] }>(
+      `/api/servers/${serverId}/files/copy`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ source, destination }),
+      },
+    ),
+
+  copyFiles: (serverId: string, sources: string[], destination: string) =>
+    request<{ entries: FileEntry[]; count?: number }>(
+      `/api/servers/${serverId}/files/copy`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ sources, destination }),
+      },
+    ),
+
+  moveFile: (serverId: string, source: string, destination: string) =>
+    request<{ entry: FileEntry; entries?: FileEntry[] }>(
+      `/api/servers/${serverId}/files/move`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ source, destination }),
+      },
+    ),
+
+  moveFiles: (serverId: string, sources: string[], destination: string) =>
+    request<{ entries: FileEntry[]; count?: number }>(
+      `/api/servers/${serverId}/files/move`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ sources, destination }),
+      },
+    ),
 
   getInstalledModpack: (serverId: string) =>
     request<InstalledModpackResponse>(`/api/servers/${serverId}/modpack`),

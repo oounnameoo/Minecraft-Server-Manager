@@ -309,3 +309,65 @@ func validBackupBytes(t *testing.T, s *Store, id string) []byte {
 	}
 	return data
 }
+
+func TestRecoverInterrupted(t *testing.T) {
+	s, _ := openTestStore(t)
+	ctx := context.Background()
+
+	// Insert pending, completed, and failed records
+	records := []struct {
+		id, status string
+	}{
+		{"b-pending-1", StatusPending},
+		{"b-pending-2", StatusPending},
+		{"b-completed", StatusCompleted},
+		{"b-failed", StatusFailed},
+	}
+	for _, r := range records {
+		_, err := s.db.ExecContext(ctx,
+			`INSERT INTO backups (id, server_id, name, size_bytes, location, status, created_at) VALUES (?, 'srv1', 'name', 100, 'loc', ?, '2026-01-01T00:00:00Z')`,
+			r.id, r.status)
+		if err != nil {
+			t.Fatalf("insert %s: %v", r.id, err)
+		}
+	}
+
+	// Create a staging tmp file
+	tmpDir := filepath.Join(s.backupDir, ".tmp")
+	if err := os.MkdirAll(tmpDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	tmpFile := filepath.Join(tmpDir, "mcm-interrupted.tar.gz")
+	if err := os.WriteFile(tmpFile, []byte("junk"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.RecoverInterrupted(ctx); err != nil {
+		t.Fatalf("RecoverInterrupted: %v", err)
+	}
+
+	// Pending backups should now be StatusFailed
+	b1, err := s.Get(ctx, "b-pending-1")
+	if err != nil || b1.Status != StatusFailed {
+		t.Fatalf("b-pending-1: got status %q, err %v", b1.Status, err)
+	}
+	b2, err := s.Get(ctx, "b-pending-2")
+	if err != nil || b2.Status != StatusFailed {
+		t.Fatalf("b-pending-2: got status %q, err %v", b2.Status, err)
+	}
+
+	// Completed and failed should remain unchanged
+	bc, err := s.Get(ctx, "b-completed")
+	if err != nil || bc.Status != StatusCompleted {
+		t.Fatalf("b-completed: got status %q, err %v", bc.Status, err)
+	}
+	bf, err := s.Get(ctx, "b-failed")
+	if err != nil || bf.Status != StatusFailed {
+		t.Fatalf("b-failed: got status %q, err %v", bf.Status, err)
+	}
+
+	// Staging tmp file should be cleaned up
+	if _, err := os.Stat(tmpFile); !os.IsNotExist(err) {
+		t.Errorf("expected tmp staging file to be cleaned up")
+	}
+}

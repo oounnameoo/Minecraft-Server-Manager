@@ -18,6 +18,7 @@ import {
   FolderOpen,
   Globe,
   HardDrive,
+  Loader2,
   Package,
   Play,
   RefreshCw,
@@ -30,9 +31,10 @@ import {
   Zap,
 } from 'lucide-react';
 import { api, ApiError } from '../api/client';
-import type { Server, ServerState } from '../api/types';
+import type { BackupProgress, Server, ServerState } from '../api/types';
 import { useLiveUptime } from '../lib/uptime';
 import { AppShell } from '../components/app-shell';
+import { Badge } from '../components/ui/badge';
 import { RequireAuth } from '../components/require-auth';
 import { BackupsPanel } from '../components/backups-panel';
 import { ConsoleViewer } from '../components/console-viewer';
@@ -105,6 +107,13 @@ export function ServerDetailRoute() {
 
   const [dnsAddress, setDnsAddress] = useState<string>('');
   const [copiedDns, setCopiedDns] = useState(false);
+  const [backupProgress, setBackupProgress] = useState<BackupProgress | null>(null);
+  const [cancellingBackup, setCancellingBackup] = useState(false);
+  const isBackingUp = !!(
+    backupProgress &&
+    backupProgress.stage !== 'completed' &&
+    backupProgress.stage !== 'failed'
+  );
 
   const state = statusState ?? server?.state ?? 'stopped';
   const isRunning = state === 'running';
@@ -175,6 +184,33 @@ export function ServerDetailRoute() {
     return () => clearInterval(timer);
   }, [server, pollStatus, isInstalling]);
 
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .getBackupProgress(id)
+      .then((res) => {
+        if (!cancelled && res.active && res.progress) {
+          setBackupProgress(res.progress);
+        }
+      })
+      .catch(() => {});
+
+    const unsub = api.subscribeBackupEvents(id, (p) => {
+      if (!cancelled) {
+        setBackupProgress(p);
+        if (p.stage === 'completed' || p.stage === 'failed') {
+          void loadServer();
+          void pollStatus();
+        }
+      }
+    });
+
+    return () => {
+      cancelled = true;
+      unsub();
+    };
+  }, [id, loadServer, pollStatus]);
+
   const run = useCallback(
     async (fn: () => Promise<Server>) => {
       if (!server) return;
@@ -187,13 +223,49 @@ export function ServerDetailRoute() {
         setStatusStartedAt(updated.started_at);
         setStatusUptimeSeconds(updated.uptime_seconds);
       } catch (err) {
-        setError(err instanceof ApiError ? err.detail : 'Action failed');
+        if (
+          err instanceof ApiError &&
+          (err.code === 'world_busy' ||
+            err.detail.toLowerCase().includes('busy') ||
+            err.detail.toLowerCase().includes('backup'))
+        ) {
+          setError(
+            'Server is currently backing up or busy with a background task. Power controls will resume once it completes.',
+          );
+        } else {
+          setError(err instanceof ApiError ? err.detail : 'Action failed');
+        }
       } finally {
         setBusy(false);
       }
     },
     [server],
   );
+
+  async function handleForceCancelBackup() {
+    if (!server) return;
+    const confirmed = await confirm(
+      'Force cancel the active backup operation? Any partial archive will be removed and server locks will be released immediately.',
+      {
+        title: 'Force cancel backup',
+        confirmLabel: 'Force cancel',
+        destructive: true,
+      },
+    );
+    if (!confirmed) return;
+
+    setCancellingBackup(true);
+    try {
+      await api.cancelBackup(server.id);
+      setBackupProgress(null);
+      void loadServer();
+      void pollStatus();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.detail : 'Could not cancel backup');
+    } finally {
+      setCancellingBackup(false);
+    }
+  }
 
   async function handleDelete() {
     if (!server) return;
@@ -347,7 +419,14 @@ export function ServerDetailRoute() {
                   <h1 className="truncate text-2xl font-semibold tracking-tight text-foreground sm:text-3xl">
                     {server.name}
                   </h1>
-                  <StatusBadge state={state} />
+                  {isBackingUp ? (
+                    <Badge className="border-transparent bg-sky-500/10 text-sky-800 dark:text-sky-300 inline-flex shrink-0 items-center capitalize gap-1.5 font-medium">
+                      <Loader2 className="h-3 w-3 animate-spin" />
+                      Backing up ({backupProgress?.percent ?? 0}%)
+                    </Badge>
+                  ) : (
+                    <StatusBadge state={state} />
+                  )}
                   <UpdateAvailableBadge result={updateResult} />
                   {server.needs_rebuild && (
                     <span
@@ -443,7 +522,12 @@ export function ServerDetailRoute() {
 
               {/* Right Power Actions */}
               <div className="flex flex-wrap items-center gap-2 lg:justify-end">
-                {state === 'starting' || state === 'stopping' ? (
+                {isBackingUp ? (
+                  <Button size="sm" disabled className="gap-1.5" title="Server is currently backing up. Power controls will resume once the backup completes.">
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    <span>Backing up…</span>
+                  </Button>
+                ) : state === 'starting' || state === 'stopping' ? (
                   <Button size="sm" disabled><RefreshCw className="h-4 w-4 animate-spin" />{state === 'starting' ? 'Starting…' : 'Stopping…'}</Button>
                 ) : !isActive ? (
                   <Button
@@ -494,16 +578,16 @@ export function ServerDetailRoute() {
                       <Download className="h-4 w-4 mr-2" />
                       <span>Export server (.zip)</span>
                     </DropdownMenuItem>
-                    <DropdownMenuItem disabled={busy || !can('servers.copy', id)} onSelect={() => setCopyDialogOpen(true)}>
+                    <DropdownMenuItem disabled={busy || isBackingUp || !can('servers.copy', id)} onSelect={() => setCopyDialogOpen(true)}>
                       <Copy className="h-4 w-4 mr-2" />
                       <span>Copy server</span>
                     </DropdownMenuItem>
-                    <DropdownMenuItem disabled={busy || !can('servers.rebuild', id)} onSelect={() => void handleRecreate()}>
+                    <DropdownMenuItem disabled={busy || isBackingUp || !can('servers.rebuild', id)} onSelect={() => void handleRecreate()}>
                       <RotateCcw className="h-4 w-4 mr-2" />
                       <span>Rebuild container</span>
                     </DropdownMenuItem>
                     <DropdownMenuItem
-                      disabled={busy || !can('servers.power', id) || state === 'stopped' || state === 'stopping'}
+                      disabled={busy || isBackingUp || !can('servers.power', id) || state === 'stopped' || state === 'stopping'}
                       onSelect={() => void handleKill()}
                       className="text-destructive focus:text-destructive"
                     >
@@ -512,7 +596,7 @@ export function ServerDetailRoute() {
                     </DropdownMenuItem>
                     <DropdownMenuSeparator />
                     <DropdownMenuItem
-                      disabled={busy || !can('servers.delete', id)}
+                      disabled={busy || isBackingUp || !can('servers.delete', id)}
                       onSelect={() => void handleDelete()}
                       className="text-destructive focus:text-destructive"
                     >
@@ -539,6 +623,36 @@ export function ServerDetailRoute() {
             </div>
             {updateResult?.error && <p role="status" className="text-xs text-amber-800 dark:text-amber-300">Some checks failed. Showing last known updates.</p>}
           </div>}
+
+          {isBackingUp && (
+            <div className="mb-5 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-sky-500/30 bg-sky-500/10 p-3.5 text-xs text-sky-900 dark:text-sky-200 font-medium animate-fadeIn">
+              <div className="flex items-center gap-2.5 truncate">
+                <Loader2 className="h-4 w-4 animate-spin text-sky-600 dark:text-sky-400 shrink-0" />
+                <span className="truncate">
+                  <strong className="capitalize">{backupProgress?.operation || 'Backup'}:</strong> {backupProgress?.message || 'Archiving server world data…'}
+                </span>
+              </div>
+              <div className="flex items-center gap-3 shrink-0">
+                {backupProgress?.percent !== undefined && (
+                  <span className="font-bold tabular-nums text-sky-700 dark:text-sky-300">
+                    {backupProgress.percent}%
+                  </span>
+                )}
+                {can('backups.create', server.id) && (
+                  <Button
+                    size="sm"
+                    variant="destructive"
+                    className="h-7 text-xs px-2.5 font-semibold"
+                    disabled={cancellingBackup}
+                    onClick={() => void handleForceCancelBackup()}
+                  >
+                    {cancellingBackup && <Loader2 className="h-3 w-3 animate-spin mr-1" />}
+                    Force Cancel
+                  </Button>
+                )}
+              </div>
+            </div>
+          )}
 
           {/* Installation Progress Banner */}
           {updateResult?.software?.reason && <p className="mb-5 text-sm text-muted-foreground">Software checks: {updateResult.software.reason}</p>}

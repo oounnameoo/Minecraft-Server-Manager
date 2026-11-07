@@ -258,6 +258,10 @@ func (s *Store) ArchiveMultiple(id string, sources []string, destDir, name strin
 	}
 	defer os.Remove(temp.Name())
 	defer temp.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	s.RegisterTaskCancel(id, cancel)
+	defer s.UnregisterTaskCancel(id)
 	zw := zip.NewWriter(temp)
 	var count int64
 	s.SetTaskProgress(id, TaskProgress{Operation: "archive", ID: name, Stage: "compressing", Message: "Compressing files"})
@@ -270,6 +274,9 @@ func (s *Store) ArchiveMultiple(id string, sources []string, destDir, name strin
 		err = fs.WalkDir(root.FS(), source, func(rel string, d fs.DirEntry, walkErr error) error {
 			if walkErr != nil {
 				return walkErr
+			}
+			if err := ctx.Err(); err != nil {
+				return err
 			}
 			if err := storage.Check(root, rel); err != nil {
 				return err
@@ -305,11 +312,17 @@ func (s *Store) ArchiveMultiple(id string, sources []string, destDir, name strin
 			if err != nil {
 				return err
 			}
-			defer f.Close()
-			_, err = io.Copy(w, f)
+			_, copyErr := io.Copy(w, f)
+			closeErr := f.Close()
+			if copyErr != nil {
+				return copyErr
+			}
+			if closeErr != nil {
+				return closeErr
+			}
 			count++
 			s.SetTaskProgress(id, TaskProgress{Operation: "archive", ID: name, Stage: "compressing", Current: count, Message: "Compressing " + rel})
-			return err
+			return nil
 		})
 		if err != nil {
 			zw.Close()
@@ -332,6 +345,10 @@ func (s *Store) Unzip(id, archive, dest string) (int, error) {
 	return s.UnzipContext(context.Background(), id, archive, dest)
 }
 func (s *Store) UnzipContext(ctx context.Context, id, archive, dest string) (int, error) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	s.RegisterTaskCancel(id, cancel)
+	defer s.UnregisterTaskCancel(id)
 	unlockWorld := s.lockWorld(id, false)
 	defer unlockWorld()
 
@@ -498,6 +515,303 @@ func (s *Store) Mkdir(id, rel string) (FileEntry, error) {
 		return FileEntry{}, err
 	}
 	return rootedEntry(root, rel)
+}
+
+func (s *Store) copySingleFile(root *os.Root, src, dst string, perm fs.FileMode) error {
+	if err := root.MkdirAll(path.Dir(dst), 0755); err != nil {
+		return err
+	}
+	srcFile, err := storage.OpenRegular(root, src)
+	if err != nil {
+		return err
+	}
+	defer srcFile.Close()
+
+	dstFile, err := root.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
+	if err != nil {
+		return err
+	}
+	defer dstFile.Close()
+
+	if _, err := io.Copy(dstFile, srcFile); err != nil {
+		return err
+	}
+	return dstFile.Sync()
+}
+
+func (s *Store) copyDir(root *os.Root, src, dst string) error {
+	if err := root.MkdirAll(dst, 0755); err != nil {
+		return err
+	}
+	return fs.WalkDir(root.FS(), src, func(p string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		relSub := strings.TrimPrefix(p, src)
+		relSub = strings.TrimPrefix(relSub, "/")
+		if relSub == "" {
+			return nil
+		}
+		target := path.Join(dst, relSub)
+		if d.IsDir() {
+			return root.MkdirAll(target, 0755)
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		return s.copySingleFile(root, p, target, info.Mode().Perm())
+	})
+}
+
+func resolveCopyDestination(root *os.Root, target string) string {
+	if _, err := root.Stat(target); err != nil {
+		return target
+	}
+	dir := path.Dir(target)
+	base := path.Base(target)
+	ext := path.Ext(base)
+	nameWithoutExt := strings.TrimSuffix(base, ext)
+
+	candidateBase := fmt.Sprintf("%s (copy)%s", nameWithoutExt, ext)
+	candidate := path.Join(dir, candidateBase)
+	if _, err := root.Stat(candidate); err != nil {
+		return candidate
+	}
+
+	for i := 2; i < 1000; i++ {
+		candidateBase := fmt.Sprintf("%s (copy %d)%s", nameWithoutExt, i, ext)
+		candidate = path.Join(dir, candidateBase)
+		if _, err := root.Stat(candidate); err != nil {
+			return candidate
+		}
+	}
+	return candidate
+}
+
+// CopyFile duplicates a file or directory at destination. If destination is an existing
+// directory, the source is copied into that directory with its base name.
+func (s *Store) CopyFile(id, source, destination string) (FileEntry, error) {
+	unlockWorld := s.lockWorld(id, false)
+	defer unlockWorld()
+
+	root, err := s.openDataRoot(id)
+	if err != nil {
+		return FileEntry{}, err
+	}
+	defer root.Close()
+
+	srcClean, err := safeRel(source)
+	if err != nil || srcClean == "." {
+		return FileEntry{}, ErrInvalidPath
+	}
+	dstClean, err := safeRel(destination)
+	if err != nil || dstClean == "." {
+		return FileEntry{}, ErrInvalidPath
+	}
+
+	if strings.HasSuffix(destination, "/") {
+		if err := root.MkdirAll(dstClean, 0755); err != nil {
+			return FileEntry{}, err
+		}
+	}
+	if dstInfo, err := root.Stat(dstClean); err == nil && dstInfo.IsDir() {
+		dstClean = path.Join(dstClean, path.Base(srcClean))
+	}
+	if srcClean == dstClean {
+		dstClean = resolveCopyDestination(root, dstClean)
+	}
+
+	if strings.HasPrefix(dstClean, srcClean+"/") {
+		return FileEntry{}, fmt.Errorf("%w: cannot copy directory into itself", ErrInvalidPath)
+	}
+	if err = storage.Check(root, srcClean); err != nil {
+		return FileEntry{}, err
+	}
+	if err = storage.Check(root, dstClean); err != nil {
+		return FileEntry{}, err
+	}
+
+	srcInfo, err := root.Stat(srcClean)
+	if err != nil {
+		return FileEntry{}, err
+	}
+
+	if srcInfo.IsDir() {
+		if err := s.copyDir(root, srcClean, dstClean); err != nil {
+			return FileEntry{}, err
+		}
+	} else {
+		if err := s.copySingleFile(root, srcClean, dstClean, srcInfo.Mode().Perm()); err != nil {
+			return FileEntry{}, err
+		}
+	}
+
+	return rootedEntry(root, dstClean)
+}
+
+// MoveFile renames or moves a file or directory to destination. If destination is an
+// existing directory, the source is moved into that directory with its base name.
+func (s *Store) MoveFile(id, source, destination string) (FileEntry, error) {
+	unlockWorld := s.lockWorld(id, false)
+	defer unlockWorld()
+
+	root, err := s.openDataRoot(id)
+	if err != nil {
+		return FileEntry{}, err
+	}
+	defer root.Close()
+
+	srcClean, err := safeRel(source)
+	if err != nil || srcClean == "." {
+		return FileEntry{}, ErrInvalidPath
+	}
+	dstClean, err := safeRel(destination)
+	if err != nil || dstClean == "." {
+		return FileEntry{}, ErrInvalidPath
+	}
+	if srcClean == dstClean {
+		return rootedEntry(root, dstClean)
+	}
+	if strings.HasPrefix(dstClean, srcClean+"/") {
+		return FileEntry{}, fmt.Errorf("%w: cannot move directory into itself", ErrInvalidPath)
+	}
+	if err = storage.Check(root, srcClean); err != nil {
+		return FileEntry{}, err
+	}
+	if err = storage.Check(root, dstClean); err != nil {
+		return FileEntry{}, err
+	}
+
+	if strings.HasSuffix(destination, "/") {
+		if err := root.MkdirAll(dstClean, 0755); err != nil {
+			return FileEntry{}, err
+		}
+	}
+	if dstInfo, err := root.Stat(dstClean); err == nil && dstInfo.IsDir() {
+		dstClean = path.Join(dstClean, path.Base(srcClean))
+		if srcClean == dstClean {
+			return rootedEntry(root, dstClean)
+		}
+		if err = storage.Check(root, dstClean); err != nil {
+			return FileEntry{}, err
+		}
+	}
+
+	if err := root.MkdirAll(path.Dir(dstClean), 0755); err != nil {
+		return FileEntry{}, err
+	}
+
+	if err := root.Rename(srcClean, dstClean); err != nil {
+		return FileEntry{}, err
+	}
+	return rootedEntry(root, dstClean)
+}
+
+// CopyMultiple copies multiple sources into destinationDir.
+func (s *Store) CopyMultiple(id string, sources []string, destinationDir string) ([]FileEntry, error) {
+	unlockWorld := s.lockWorld(id, false)
+	defer unlockWorld()
+
+	root, err := s.openDataRoot(id)
+	if err != nil {
+		return nil, err
+	}
+	defer root.Close()
+
+	dstDir, err := safeRel(destinationDir)
+	if err != nil {
+		return nil, ErrInvalidPath
+	}
+	if err := root.MkdirAll(dstDir, 0755); err != nil {
+		return nil, err
+	}
+
+	var results []FileEntry
+	for _, source := range sources {
+		srcClean, err := safeRel(source)
+		if err != nil || srcClean == "." {
+			return nil, ErrInvalidPath
+		}
+		target := path.Join(dstDir, path.Base(srcClean))
+		if strings.HasPrefix(target, srcClean+"/") {
+			return nil, fmt.Errorf("%w: cannot copy directory into itself", ErrInvalidPath)
+		}
+		target = resolveCopyDestination(root, target)
+		if err = storage.Check(root, srcClean); err != nil {
+			return nil, err
+		}
+		if err = storage.Check(root, target); err != nil {
+			return nil, err
+		}
+		srcInfo, err := root.Stat(srcClean)
+		if err != nil {
+			return nil, err
+		}
+		if srcInfo.IsDir() {
+			if err := s.copyDir(root, srcClean, target); err != nil {
+				return nil, err
+			}
+		} else {
+			if err := s.copySingleFile(root, srcClean, target, srcInfo.Mode().Perm()); err != nil {
+				return nil, err
+			}
+		}
+		entry, err := rootedEntry(root, target)
+		if err == nil {
+			results = append(results, entry)
+		}
+	}
+	return results, nil
+}
+
+// MoveMultiple moves multiple sources into destinationDir.
+func (s *Store) MoveMultiple(id string, sources []string, destinationDir string) ([]FileEntry, error) {
+	unlockWorld := s.lockWorld(id, false)
+	defer unlockWorld()
+
+	root, err := s.openDataRoot(id)
+	if err != nil {
+		return nil, err
+	}
+	defer root.Close()
+
+	dstDir, err := safeRel(destinationDir)
+	if err != nil {
+		return nil, ErrInvalidPath
+	}
+	if err := root.MkdirAll(dstDir, 0755); err != nil {
+		return nil, err
+	}
+
+	var results []FileEntry
+	for _, source := range sources {
+		srcClean, err := safeRel(source)
+		if err != nil || srcClean == "." {
+			return nil, ErrInvalidPath
+		}
+		target := path.Join(dstDir, path.Base(srcClean))
+		if srcClean == target {
+			continue
+		}
+		if strings.HasPrefix(target, srcClean+"/") {
+			return nil, fmt.Errorf("%w: cannot move directory into itself", ErrInvalidPath)
+		}
+		if err = storage.Check(root, srcClean); err != nil {
+			return nil, err
+		}
+		if err = storage.Check(root, target); err != nil {
+			return nil, err
+		}
+		if err := root.Rename(srcClean, target); err != nil {
+			return nil, err
+		}
+		entry, err := rootedEntry(root, target)
+		if err == nil {
+			results = append(results, entry)
+		}
+	}
+	return results, nil
 }
 func (s *Store) Rename(id, rel, name string) (FileEntry, error) {
 	unlockWorld := s.lockWorld(id, false)

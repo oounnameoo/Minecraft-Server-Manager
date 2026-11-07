@@ -362,9 +362,10 @@ type Store struct {
 	targetUpdatesFlightMu sync.Mutex
 	targetUpdatesInFlight map[string]*targetUpdatesFlightCall
 
-	tasksMu  sync.RWMutex
-	tasks    map[string]*TaskProgress
-	taskSubs map[string][]chan TaskProgress
+	tasksMu     sync.RWMutex
+	tasks       map[string]*TaskProgress
+	taskSubs    map[string][]chan TaskProgress
+	taskCancels map[string]func()
 
 	diskMu    sync.RWMutex
 	diskCache map[string]diskCacheEntry
@@ -966,7 +967,9 @@ func (s *Store) pendingInitialState(id string, srv Server) string {
 // Start ensures a container exists then starts it.
 func (s *Store) Start(ctx context.Context, id string) (Server, error) {
 	mu := s.lifecycleLock(id)
-	mu.Lock()
+	if !mu.TryLock() {
+		return Server{}, ErrWorldBusy
+	}
 	defer mu.Unlock()
 	return s.startLocked(ctx, id)
 }
@@ -1186,7 +1189,9 @@ func (s *Store) Kill(ctx context.Context, id string) (Server, error) {
 // Restart restarts a running container, starting it if it is stopped.
 func (s *Store) Restart(ctx context.Context, id string) (Server, error) {
 	mu := s.lifecycleLock(id)
-	mu.Lock()
+	if !mu.TryLock() {
+		return Server{}, ErrWorldBusy
+	}
 	defer mu.Unlock()
 	if _, err := s.stopLocked(ctx, id); err != nil {
 		return Server{}, err
@@ -1202,7 +1207,9 @@ func (s *Store) Restart(ctx context.Context, id string) (Server, error) {
 // is cleared so the next Start provisions a fresh container.
 func (s *Store) Recreate(ctx context.Context, id string) (Server, error) {
 	mu := s.lifecycleLock(id)
-	mu.Lock()
+	if !mu.TryLock() {
+		return Server{}, ErrWorldBusy
+	}
 	defer mu.Unlock()
 	opCtx, opCancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Minute)
 	defer opCancel()

@@ -71,3 +71,13 @@ func (s *Server) handleTaskEvents(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 }
+
+func (s *Server) handleCancelTask(w http.ResponseWriter, r *http.Request) {
+	serverID := r.PathValue("id")
+	if _, err := s.servers.Get(r.Context(), serverID); err != nil {
+		s.writeServerErr(w, err)
+		return
+	}
+	cancelled := s.servers.CancelTask(serverID)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "cancelled": cancelled})
+}

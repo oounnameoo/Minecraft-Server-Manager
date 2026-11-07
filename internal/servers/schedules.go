@@ -19,6 +19,8 @@ func (s *Store) ExecuteScheduledTask(ctx context.Context, task schedules.Task) e
 		_, err = s.Stop(ctx, task.ServerID)
 	case "restart":
 		_, err = s.Restart(ctx, task.ServerID)
+	case "backup":
+		err = fmt.Errorf("backup action requires backup coordinator")
 	default:
 		err = fmt.Errorf("unsupported scheduled action %q", task.Action)
 	}

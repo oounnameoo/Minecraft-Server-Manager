@@ -112,6 +112,7 @@ type Store struct {
 	mu             sync.RWMutex
 	progress       map[string]*BackupProgress
 	subscribers    map[string][]chan BackupProgress
+	cancels        map[string]context.CancelFunc
 	notifier       notifications.Notifier
 	operationLocks sync.Map
 	slots          chan struct{}
@@ -140,6 +141,7 @@ func New(handle *sql.DB, cfg S3Config, dataDir string, backupDir ...string) *Sto
 		backupDir:   filepath.Join(dataDir, "backups"),
 		progress:    make(map[string]*BackupProgress),
 		subscribers: make(map[string][]chan BackupProgress),
+		cancels:     make(map[string]context.CancelFunc),
 	}
 	if len(backupDir) > 0 && backupDir[0] != "" {
 		s.backupDir = filepath.Clean(backupDir[0])
@@ -148,6 +150,55 @@ func New(handle *sql.DB, cfg S3Config, dataDir string, backupDir ...string) *Sto
 		s.client = newS3Client(cfg)
 	}
 	return s
+}
+
+// RecoverInterrupted marks any backups left in 'pending' status from an ungraceful
+// shutdown or power loss as 'failed' and cleans up temporary staging archives.
+func (s *Store) RecoverInterrupted(ctx context.Context) error {
+	if _, err := s.db.ExecContext(ctx, `UPDATE backups SET status=? WHERE status=?`, StatusFailed, StatusPending); err != nil {
+		return fmt.Errorf("recover interrupted backups: %w", err)
+	}
+	tmpDir := filepath.Join(s.backupDir, ".tmp")
+	_ = os.RemoveAll(tmpDir)
+	return nil
+}
+
+func (s *Store) registerCancel(serverID string, cancel context.CancelFunc) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.cancels == nil {
+		s.cancels = make(map[string]context.CancelFunc)
+	}
+	s.cancels[serverID] = cancel
+}
+
+func (s *Store) unregisterCancel(serverID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.cancels != nil {
+		delete(s.cancels, serverID)
+	}
+}
+
+// CancelOperation force-cancels any active backup, restore, or upload operation for a server.
+func (s *Store) CancelOperation(serverID string) bool {
+	s.mu.Lock()
+	cancel, ok := s.cancels[serverID]
+	if ok && cancel != nil {
+		delete(s.cancels, serverID)
+		cancel()
+	}
+	s.mu.Unlock()
+	if ok {
+		s.SetProgress(serverID, BackupProgress{
+			Operation: "backup",
+			Stage:     "failed",
+			Percent:   100,
+			Message:   "Operation force-cancelled by user.",
+			Error:     "cancelled",
+		})
+	}
+	return ok
 }
 
 // serverDataDir returns the per-server data directory.
@@ -350,6 +401,8 @@ func (s *Store) SubscribeProgress(serverID string) (chan BackupProgress, func())
 func (s *Store) Backup(ctx context.Context, serverID, name string, target ...string) (result *Backup, err error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Minute)
 	defer cancel()
+	s.registerCancel(serverID, cancel)
+	defer s.unregisterCancel(serverID)
 	release, err := s.lockOperation(ctx, serverID)
 	if err != nil {
 		return nil, err
@@ -360,6 +413,15 @@ func (s *Store) Backup(ctx context.Context, serverID, name string, target ...str
 		result, e = s.backupLocked(ctx, serverID, name, target...)
 		return e
 	})
+	if err != nil && result == nil {
+		s.SetProgress(serverID, BackupProgress{
+			Operation: "backup",
+			Stage:     "failed",
+			Percent:   100,
+			Message:   "Backup failed: " + err.Error(),
+			Error:     err.Error(),
+		})
+	}
 	return result, err
 }
 func (s *Store) backupLocked(ctx context.Context, serverID, name string, storageTarget ...string) (*Backup, error) {
@@ -563,6 +625,8 @@ func (s *Store) backupLocked(ctx context.Context, serverID, name string, storage
 func (s *Store) UploadBackup(ctx context.Context, serverID, name string, r io.Reader, size int64, target ...string) (*Backup, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Minute)
 	defer cancel()
+	s.registerCancel(serverID, cancel)
+	defer s.unregisterCancel(serverID)
 	release, err := s.lockOperation(ctx, serverID)
 	if err != nil {
 		return nil, err
@@ -706,6 +770,8 @@ func (s *Store) Restore(ctx context.Context, backupID string) error {
 		return err
 	}
 	defer release()
+	s.registerCancel(b.ServerID, cancel)
+	defer s.unregisterCancel(b.ServerID)
 	return s.withData(ctx, b.ServerID, true, func(ctx context.Context) error { return s.restoreLocked(ctx, backupID) })
 }
 func (s *Store) restoreLocked(ctx context.Context, backupID string) error {
@@ -985,7 +1051,7 @@ func (s *Store) archiveWorld(ctx context.Context, serverID string, backupIDs ...
 			return nil
 		}
 
-		if d.IsDir() && (strings.HasPrefix(filepath.Base(name), ".mcm-runtime-stage-") || strings.HasPrefix(filepath.Base(name), ".mcm-pack-stage-") || strings.HasPrefix(filepath.Base(name), ".mcm-artifact-stage-") || strings.HasPrefix(filepath.Base(name), ".mcm-publish-recovery-")) {
+		if d.IsDir() && (name == "backups" || strings.HasPrefix(filepath.Base(name), ".mcm-runtime-stage-") || strings.HasPrefix(filepath.Base(name), ".mcm-pack-stage-") || strings.HasPrefix(filepath.Base(name), ".mcm-artifact-stage-") || strings.HasPrefix(filepath.Base(name), ".mcm-publish-recovery-")) {
 			return fs.SkipDir
 		}
 		info, err := d.Info()
@@ -1032,12 +1098,18 @@ func (s *Store) archiveWorld(ctx context.Context, serverID string, backupIDs ...
 		if err != nil {
 			return err
 		}
-		defer file.Close()
-		n, err := storage.Copy(ctx, budget.Writer(tw), file, info.Size())
-		if err == nil && n != info.Size() {
-			err = fmt.Errorf("file changed during backup")
+		n, copyErr := storage.Copy(ctx, budget.Writer(tw), file, info.Size())
+		closeErr := file.Close()
+		if copyErr != nil {
+			return copyErr
 		}
-		return err
+		if closeErr != nil {
+			return closeErr
+		}
+		if n != info.Size() {
+			return fmt.Errorf("file changed during backup")
+		}
+		return nil
 	})
 	if closeErr := tw.Close(); err == nil {
 		err = closeErr

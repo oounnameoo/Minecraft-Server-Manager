@@ -386,3 +386,84 @@ func TestUploadFileRejectsTraversal(t *testing.T) {
 		}
 	}
 }
+
+func TestCopyAndMoveFiles(t *testing.T) {
+	s := minimalStore(t, t.TempDir())
+	serverDir := s.dataPath("id")
+	if err := os.MkdirAll(filepath.Join(serverDir, "config"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(serverDir, "config", "test.yml"), []byte("hello world"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Copy file to new path
+	copied, err := s.CopyFile("id", "config/test.yml", "config/test-copy.yml")
+	if err != nil {
+		t.Fatalf("Copy failed: %v", err)
+	}
+	if copied.Name != "test-copy.yml" {
+		t.Fatalf("unexpected copied name: %s", copied.Name)
+	}
+	content, err := s.ReadFileContent("id", "config/test-copy.yml")
+	if err != nil || content != "hello world" {
+		t.Fatalf("copied content mismatch: %v, %q", err, content)
+	}
+
+	// Move file to new directory
+	moved, err := s.MoveFile("id", "config/test-copy.yml", "backup/")
+	if err != nil {
+		t.Fatalf("Move failed: %v", err)
+	}
+	if moved.Name != "test-copy.yml" {
+		t.Fatalf("unexpected moved name: %s", moved.Name)
+	}
+	if _, err := s.ReadFileContent("id", "config/test-copy.yml"); err == nil {
+		t.Fatal("original file still exists after move")
+	}
+	content, err = s.ReadFileContent("id", "backup/test-copy.yml")
+	if err != nil || content != "hello world" {
+		t.Fatalf("moved content mismatch: %v, %q", err, content)
+	}
+
+	// Test CopyMultiple & MoveMultiple
+	if err := os.WriteFile(filepath.Join(serverDir, "a.txt"), []byte("A"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(serverDir, "b.txt"), []byte("B"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	_, err = s.CopyMultiple("id", []string{"a.txt", "b.txt"}, "copied_multi")
+	if err != nil {
+		t.Fatalf("CopyMultiple failed: %v", err)
+	}
+	cA, _ := s.ReadFileContent("id", "copied_multi/a.txt")
+	cB, _ := s.ReadFileContent("id", "copied_multi/b.txt")
+	if cA != "A" || cB != "B" {
+		t.Fatalf("CopyMultiple contents mismatch: %q, %q", cA, cB)
+	}
+
+	_, err = s.MoveMultiple("id", []string{"a.txt", "b.txt"}, "moved_multi")
+	if err != nil {
+		t.Fatalf("MoveMultiple failed: %v", err)
+	}
+	mA, _ := s.ReadFileContent("id", "moved_multi/a.txt")
+	mB, _ := s.ReadFileContent("id", "moved_multi/b.txt")
+	if mA != "A" || mB != "B" {
+		t.Fatalf("MoveMultiple contents mismatch: %q, %q", mA, mB)
+	}
+	if _, err := s.ReadFileContent("id", "a.txt"); err == nil {
+		t.Fatal("a.txt still exists after MoveMultiple")
+	}
+
+	// Safety: reject moving directory into itself
+	if _, err := s.Mkdir("id", "parent"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.MoveFile("id", "parent", "parent/child"); err == nil {
+		t.Fatal("expected error moving dir into child")
+	}
+	if _, err := s.CopyFile("id", "parent", "parent/child"); err == nil {
+		t.Fatal("expected error copying dir into child")
+	}
+}

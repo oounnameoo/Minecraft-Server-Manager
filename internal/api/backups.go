@@ -49,8 +49,9 @@ func (s *Server) handleBackupProgress(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"active": false})
 		return
 	}
+	active := prog.Stage != "completed" && prog.Stage != "failed"
 	writeJSON(w, http.StatusOK, map[string]any{
-		"active":   true,
+		"active":   active,
 		"progress": prog,
 	})
 }
@@ -279,6 +280,16 @@ func (s *Server) handleDownloadBackup(w http.ResponseWriter, r *http.Request) {
 	if _, err := io.Copy(w, rc); err != nil && s.logger != nil {
 		s.logger.Printf("download backup failed id=%s err=%v", backupID, err)
 	}
+}
+
+func (s *Server) handleCancelBackup(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if _, err := s.servers.Get(r.Context(), id); err != nil {
+		s.writeServerErr(w, err)
+		return
+	}
+	cancelled := s.backups.CancelOperation(id)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "cancelled": cancelled})
 }
 
 func (s *Server) writeBackupErr(w http.ResponseWriter, err error) {

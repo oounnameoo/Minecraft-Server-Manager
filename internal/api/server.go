@@ -213,6 +213,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("DELETE /api/servers/{id}/schedules/{scheduleId}", s.requirePermission("schedules.manage", s.wrapJSON(s.handleDeleteSchedule)))
 	s.mux.HandleFunc("GET /api/servers/{id}/tasks/progress", s.requirePermission("servers.view", s.wrapJSON(s.handleTaskProgress)))
 	s.mux.HandleFunc("GET /api/servers/{id}/tasks/events", s.requirePermission("servers.view", s.handleTaskEvents))
+	s.mux.HandleFunc("POST /api/servers/{id}/tasks/cancel", s.requirePermission("servers.power", s.wrapJSON(s.handleCancelTask)))
 
 	s.mux.HandleFunc("GET /api/servers/{id}/properties", s.requirePermission("files.read", s.wrapJSON(s.handleGetProperties)))
 	s.mux.HandleFunc("PUT /api/servers/{id}/properties", s.requirePermission("servers.edit", s.wrapJSON(s.handleSaveProperties)))
@@ -255,6 +256,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("DELETE /api/servers/{id}/files", s.requirePermission("files.delete", s.wrapJSON(s.handleDeleteFile)))
 	s.mux.HandleFunc("POST /api/servers/{id}/files/mkdir", s.requirePermission("files.write", s.wrapJSON(s.handleMkdir)))
 	s.mux.HandleFunc("POST /api/servers/{id}/files/rename", s.requirePermission("files.write", s.wrapJSON(s.handleRenameFile)))
+	s.mux.HandleFunc("POST /api/servers/{id}/files/copy", s.requirePermission("files.write", s.wrapJSON(s.handleCopyFile)))
+	s.mux.HandleFunc("POST /api/servers/{id}/files/move", s.requirePermission("files.write", s.wrapJSON(s.handleMoveFile)))
 
 	// Backups.
 	s.mux.HandleFunc("POST /api/servers/{id}/backup", s.requirePermission("backups.create", s.wrapJSON(s.handleBackupServer)))
@@ -265,6 +268,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("DELETE /api/servers/{id}/backups/trash", s.requirePermission("backups.delete", s.wrapJSON(s.handleBackupCleanup)))
 	s.mux.HandleFunc("GET /api/servers/{id}/backups/progress", s.requirePermission("backups.read", s.wrapJSON(s.handleBackupProgress)))
 	s.mux.HandleFunc("GET /api/servers/{id}/backups/events", s.requirePermission("backups.read", s.handleBackupEvents))
+	s.mux.HandleFunc("POST /api/servers/{id}/backups/cancel", s.requirePermission("backups.create", s.wrapJSON(s.handleCancelBackup)))
 	s.mux.HandleFunc("POST /api/servers/{id}/backups/upload", s.requirePermission("backups.create", s.wrapJSON(s.handleUploadBackup)))
 	s.mux.HandleFunc("POST /api/servers/{id}/restore/{backupId}", s.requirePermission("backups.restore", s.wrapJSON(s.handleRestoreBackup)))
 	s.mux.HandleFunc("DELETE /api/backups/{backupId}", s.requirePermission("backups.delete", s.wrapJSON(s.handleDeleteBackup)))

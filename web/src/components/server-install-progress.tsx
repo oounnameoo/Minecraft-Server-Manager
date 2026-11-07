@@ -3,6 +3,7 @@ import { Download, Loader2, Package, Sparkles } from 'lucide-react';
 import { api } from '../api/client';
 import type { ServerState, TaskProgress } from '../api/types';
 import { ProgressBar } from './ui/progress';
+import { Button } from './ui/button';
 
 interface ServerInstallProgressProps {
   serverId: string;
@@ -18,6 +19,7 @@ export function ServerInstallProgress({
   className = '',
 }: ServerInstallProgressProps) {
   const [progress, setProgress] = useState<TaskProgress | null>(null);
+  const [cancelling, setCancelling] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -129,13 +131,32 @@ export function ServerInstallProgress({
           </div>
         </div>
 
-        {percent !== null && (
-          <div className="text-right shrink-0">
-            <span className="font-mono text-xl font-bold text-blue-600 dark:text-blue-400">
-              {percent}%
-            </span>
-          </div>
-        )}
+        <div className="flex items-center gap-3 shrink-0">
+          {percent !== null && (
+            <div className="text-right shrink-0">
+              <span className="font-mono text-xl font-bold text-blue-600 dark:text-blue-400">
+                {percent}%
+              </span>
+            </div>
+          )}
+          <Button
+            size="sm"
+            variant="destructive"
+            className="h-7 text-xs px-2.5 font-semibold"
+            disabled={cancelling}
+            onClick={async () => {
+              setCancelling(true);
+              try {
+                await api.cancelTask(serverId);
+              } finally {
+                setCancelling(false);
+              }
+            }}
+          >
+            {cancelling && <Loader2 className="h-3 w-3 animate-spin mr-1" />}
+            Force Cancel
+          </Button>
+        </div>
       </div>
 
       <ProgressBar

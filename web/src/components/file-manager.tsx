@@ -3,6 +3,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Archive,
   ArrowUp,
+  ClipboardPaste,
+  Copy,
   Download,
   Database,
   File,
@@ -10,6 +12,7 @@ import {
   FilePlus2,
   FileText,
   Folder,
+  FolderInput,
   FolderPlus,
   Globe,
   Layers,
@@ -104,6 +107,11 @@ export function FileManager({ server, onNBTDirtyChange }: { server: Server; onNB
   const [urlName, setUrlName] = useState('');
   const [selectedNames, setSelectedNames] = useState<Set<string>>(new Set());
   const selectionAnchor = useRef<string | null>(null);
+  const [clipboard, setClipboard] = useState<{
+    op: 'copy' | 'move';
+    sources: string[];
+    sourceDir: string;
+  } | null>(null);
 
   // Editor state.
   const [editorPath, setEditorPath] = useState<string | null>(null);
@@ -441,6 +449,67 @@ export function FileManager({ server, onNBTDirtyChange }: { server: Server; onNB
     await run(() => api.renameFile(server.id, joinPath(cwd, entry.name), name.trim()));
   }
 
+  async function handleCopy(entry: FileEntry) {
+    const ext = entry.is_directory ? '' : entry.name.includes('.') ? `.${entry.name.split('.').pop()}` : '';
+    const baseWithoutExt = ext ? entry.name.slice(0, -ext.length) : entry.name;
+    const defaultTarget = cwd ? `${cwd}/${baseWithoutExt}-copy${ext}` : `${baseWithoutExt}-copy${ext}`;
+    const target = await prompt(
+      `Copy "${entry.name}" to (new name or folder path):`,
+      defaultTarget,
+      { title: 'Copy item', confirmLabel: 'Copy' },
+    );
+    if (!target || !target.trim()) return;
+    await run(() => api.copyFile(server.id, joinPath(cwd, entry.name), target.trim()));
+  }
+
+  async function handleMove(entry: FileEntry) {
+    const target = await prompt(
+      `Move "${entry.name}" to (folder path or new path):`,
+      cwd || '',
+      { title: 'Move item', confirmLabel: 'Move' },
+    );
+    if (target === null || !target.trim() || target.trim() === joinPath(cwd, entry.name)) return;
+    await run(() => api.moveFile(server.id, joinPath(cwd, entry.name), target.trim()));
+  }
+
+  async function handleCopySelected() {
+    if (selectedNames.size === 0) return;
+    const names = Array.from(selectedNames);
+    const target = await prompt(
+      `Copy ${names.length} selected items to destination folder:`,
+      cwd || '',
+      { title: 'Copy selected items', confirmLabel: 'Copy' },
+    );
+    if (target === null) return;
+    const sources = names.map((n) => joinPath(cwd, n));
+    await run(() => api.copyFiles(server.id, sources, target.trim()));
+    setSelectedNames(new Set());
+  }
+
+  async function handleMoveSelected() {
+    if (selectedNames.size === 0) return;
+    const names = Array.from(selectedNames);
+    const target = await prompt(
+      `Move ${names.length} selected items to destination folder:`,
+      cwd || '',
+      { title: 'Move selected items', confirmLabel: 'Move' },
+    );
+    if (target === null) return;
+    const sources = names.map((n) => joinPath(cwd, n));
+    await run(() => api.moveFiles(server.id, sources, target.trim()));
+    setSelectedNames(new Set());
+  }
+
+  async function handlePaste() {
+    if (!clipboard || clipboard.sources.length === 0) return;
+    if (clipboard.op === 'copy') {
+      await run(() => api.copyFiles(server.id, clipboard.sources, cwd));
+    } else {
+      await run(() => api.moveFiles(server.id, clipboard.sources, cwd));
+      setClipboard(null);
+    }
+  }
+
   async function handleDelete(entry: FileEntry) {
     await handleDeleteEntries([entry]);
   }
@@ -579,6 +648,35 @@ export function FileManager({ server, onNBTDirtyChange }: { server: Server; onNB
         >
           <Archive className="h-4 w-4 mr-1 text-primary" /> Zip ({selectedNames.size})
         </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => void handleCopySelected()}
+          disabled={!canWrite || busy || selectedNames.size === 0}
+          title="Copy selected items"
+        >
+          <Copy className="h-4 w-4 mr-1 text-primary" /> Copy ({selectedNames.size})
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => void handleMoveSelected()}
+          disabled={!canWrite || busy || selectedNames.size === 0}
+          title="Move selected items"
+        >
+          <FolderInput className="h-4 w-4 mr-1 text-primary" /> Move ({selectedNames.size})
+        </Button>
+        {clipboard && (
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => void handlePaste()}
+            disabled={!canWrite || busy}
+            title={`Paste ${clipboard.sources.length} items into ${cwd || 'server root'}`}
+          >
+            <ClipboardPaste className="h-4 w-4 mr-1 text-primary" /> Paste {clipboard.op} ({clipboard.sources.length})
+          </Button>
+        )}
         <Button
           variant="outline"
           size="sm"
@@ -827,6 +925,12 @@ export function FileManager({ server, onNBTDirtyChange }: { server: Server; onNB
                         <Archive className="h-4 w-4" />
                       </Button>
                     )}
+                    <Button variant="ghost" size="icon" title="Copy" aria-label="Copy" disabled={!canWrite || busy} onClick={() => void handleCopy(e)}>
+                      <Copy className="h-4 w-4" />
+                    </Button>
+                    <Button variant="ghost" size="icon" title="Move" aria-label="Move" disabled={!canWrite || busy} onClick={() => void handleMove(e)}>
+                      <FolderInput className="h-4 w-4" />
+                    </Button>
                     <Button variant="ghost" size="icon" title="Rename" aria-label="Rename" disabled={!canWrite || busy} onClick={() => void handleRename(e)}>
                       <TextCursorInput className="h-4 w-4" />
                     </Button>
@@ -847,6 +951,10 @@ export function FileManager({ server, onNBTDirtyChange }: { server: Server; onNB
                   <ContextMenuLabel>{multipleSelected ? `${selectedNames.size} items selected` : e.name}</ContextMenuLabel>
                   {multipleSelected ? <>
                     <ContextMenuItem disabled={!canWrite || busy} onSelect={() => void handleArchiveSelected()}><Archive />Zip selected ({selectedNames.size})</ContextMenuItem>
+                    <ContextMenuItem disabled={!canWrite || busy} onSelect={() => void handleCopySelected()}><Copy />Copy selected ({selectedNames.size})</ContextMenuItem>
+                    <ContextMenuItem disabled={!canWrite || busy} onSelect={() => void handleMoveSelected()}><FolderInput />Move selected ({selectedNames.size})</ContextMenuItem>
+                    <ContextMenuItem disabled={!canWrite || busy} onSelect={() => setClipboard({ op: 'copy', sources: Array.from(selectedNames).map((n) => joinPath(cwd, n)), sourceDir: cwd })}><Copy />Copy to clipboard</ContextMenuItem>
+                    <ContextMenuItem disabled={!canWrite || busy} onSelect={() => setClipboard({ op: 'move', sources: Array.from(selectedNames).map((n) => joinPath(cwd, n)), sourceDir: cwd })}><FolderInput />Cut to clipboard</ContextMenuItem>
                     <ContextMenuSeparator />
                     <ContextMenuItem className="text-destructive focus:text-destructive" disabled={!canDelete || busy || editorBusy} onSelect={() => void handleDeleteSelected()}><Trash2 />Delete selected ({selectedNames.size})</ContextMenuItem>
                   </> : <>
@@ -859,6 +967,10 @@ export function FileManager({ server, onNBTDirtyChange }: { server: Server; onNB
                   {!e.is_directory && e.name.toLowerCase().endsWith('.zip') ?
                     <ContextMenuItem disabled={!canWrite || busy} onSelect={() => void handleUnzip(e)}><Layers />Unzip archive</ContextMenuItem> :
                     <ContextMenuItem disabled={!canWrite || busy} onSelect={() => void handleArchive(e)}><Archive />Archive as zip</ContextMenuItem>}
+                  <ContextMenuItem disabled={!canWrite || busy} onSelect={() => void handleCopy(e)}><Copy />Copy</ContextMenuItem>
+                  <ContextMenuItem disabled={!canWrite || busy} onSelect={() => void handleMove(e)}><FolderInput />Move</ContextMenuItem>
+                  <ContextMenuItem disabled={!canWrite || busy} onSelect={() => setClipboard({ op: 'copy', sources: [joinPath(cwd, e.name)], sourceDir: cwd })}><Copy />Copy to clipboard</ContextMenuItem>
+                  <ContextMenuItem disabled={!canWrite || busy} onSelect={() => setClipboard({ op: 'move', sources: [joinPath(cwd, e.name)], sourceDir: cwd })}><FolderInput />Cut to clipboard</ContextMenuItem>
                   <ContextMenuItem disabled={!canWrite || busy} onSelect={() => void handleRename(e)}><TextCursorInput />Rename</ContextMenuItem>
                   <ContextMenuSeparator />
                   <ContextMenuItem className="text-destructive focus:text-destructive" disabled={!canDelete || busy || editorBusy} onSelect={() => void handleDelete(e)}><Trash2 />Delete</ContextMenuItem>
@@ -875,9 +987,14 @@ export function FileManager({ server, onNBTDirtyChange }: { server: Server; onNB
             <ContextMenuItem disabled={!canWrite || busy} onSelect={() => void handleMkdir()}><FolderPlus />New folder</ContextMenuItem>
             <ContextMenuItem disabled={!canWrite || busy} onSelect={() => fileInputRef.current?.click()}><Upload />Upload files</ContextMenuItem>
             <ContextMenuItem disabled={!canWrite || busy} onSelect={() => setShowUrlInput(true)}><Globe />Download from URL</ContextMenuItem>
+            {clipboard && (
+              <ContextMenuItem disabled={!canWrite || busy} onSelect={() => void handlePaste()}><ClipboardPaste />Paste {clipboard.op} ({clipboard.sources.length} items)</ContextMenuItem>
+            )}
             {selectedNames.size > 0 && <>
               <ContextMenuSeparator />
               <ContextMenuItem disabled={!canWrite || busy} onSelect={() => void handleArchiveSelected()}><Archive />Zip selected ({selectedNames.size})</ContextMenuItem>
+              <ContextMenuItem disabled={!canWrite || busy} onSelect={() => void handleCopySelected()}><Copy />Copy selected ({selectedNames.size})</ContextMenuItem>
+              <ContextMenuItem disabled={!canWrite || busy} onSelect={() => void handleMoveSelected()}><FolderInput />Move selected ({selectedNames.size})</ContextMenuItem>
               <ContextMenuItem className="text-destructive focus:text-destructive" disabled={!canDelete || busy || editorBusy} onSelect={() => void handleDeleteSelected()}><Trash2 />Delete selected ({selectedNames.size})</ContextMenuItem>
             </>}
             <ContextMenuSeparator />

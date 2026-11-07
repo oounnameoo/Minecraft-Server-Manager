@@ -472,4 +472,56 @@ describe('FileManager save conflicts', () => {
     expect(screen.getByText('Setting 300')).toBeInTheDocument();
     expect(screen.queryByText('Setting 200')).not.toBeInTheDocument();
   });
+
+  it('allows copying and moving a file via context menu or actions', async () => {
+    const copySpy = vi.spyOn(api, 'copyFile').mockResolvedValue({ entry: { ...entry, name: 'config-copy.yml' } });
+    const moveSpy = vi.spyOn(api, 'moveFile').mockResolvedValue({ entry: { ...entry, name: 'config.yml' } });
+    const user = userEvent.setup();
+    render(<FileManager server={server} />);
+    const file = await screen.findByRole('button', { name: 'config.yml' });
+
+    // Open context menu and click Copy
+    await user.pointer({ target: file, keys: '[MouseRight]' });
+    const menu = await screen.findByRole('menu', { name: 'Actions for config.yml' });
+    await user.click(within(menu).getByRole('menuitem', { name: 'Copy' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Copy item' });
+    await user.click(within(dialog).getByRole('button', { name: 'Copy' }));
+    await waitFor(() => expect(copySpy).toHaveBeenCalledWith(server.id, 'config.yml', 'config-copy.yml'));
+
+    // Open context menu and click Move
+    await user.pointer({ target: file, keys: '[MouseRight]' });
+    const moveMenu = await screen.findByRole('menu', { name: 'Actions for config.yml' });
+    await user.click(within(moveMenu).getByRole('menuitem', { name: 'Move' }));
+    const moveDialog = await screen.findByRole('dialog', { name: 'Move item' });
+    const input = within(moveDialog).getByRole('textbox');
+    await user.clear(input);
+    await user.type(input, 'backup/{Enter}');
+    await waitFor(() => expect(moveSpy).toHaveBeenCalledWith(server.id, 'config.yml', 'backup/'));
+  });
+
+  it('allows copying and moving selected files from toolbar', async () => {
+    const copyMulti = vi.spyOn(api, 'copyFiles').mockResolvedValue({ entries: [entry] });
+    const moveMulti = vi.spyOn(api, 'moveFiles').mockResolvedValue({ entries: [entry] });
+    const user = userEvent.setup();
+    render(<FileManager server={server} />);
+    const checkbox = await screen.findByRole('checkbox', { name: 'Select config.yml' });
+    await user.click(checkbox);
+
+    // Copy selected button
+    const copyBtn = screen.getByRole('button', { name: /Copy \(1\)/ });
+    await user.click(copyBtn);
+    const copyDialog = await screen.findByRole('dialog', { name: 'Copy selected items' });
+    const input = within(copyDialog).getByRole('textbox');
+    await user.type(input, 'backup_dir{Enter}');
+    await waitFor(() => expect(copyMulti).toHaveBeenCalledWith(server.id, ['config.yml'], 'backup_dir'));
+
+    // Re-select and move
+    await user.click(checkbox);
+    const moveBtn = screen.getByRole('button', { name: /Move \(1\)/ });
+    await user.click(moveBtn);
+    const moveDialog = await screen.findByRole('dialog', { name: 'Move selected items' });
+    const moveInput = within(moveDialog).getByRole('textbox');
+    await user.type(moveInput, 'moved_dir{Enter}');
+    await waitFor(() => expect(moveMulti).toHaveBeenCalledWith(server.id, ['config.yml'], 'moved_dir'));
+  });
 });

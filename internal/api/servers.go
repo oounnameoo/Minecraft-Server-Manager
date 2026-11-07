@@ -347,6 +347,10 @@ func (s *Server) writeServerErr(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusNotFound, "not_found", "server not found")
 		return
 	}
+	if errors.Is(err, servers.ErrWorldBusy) {
+		writeError(w, http.StatusConflict, "world_busy", "This server is currently backing up or busy with a background task. Please wait for it to complete.")
+		return
+	}
 	if errors.Is(err, servers.ErrPortInUse) {
 		msg := err.Error()
 		if idx := strings.Index(msg, "port already in use: "); idx >= 0 {

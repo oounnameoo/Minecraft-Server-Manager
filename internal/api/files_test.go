@@ -145,3 +145,43 @@ func TestWriteFileErrWithoutLogger(t *testing.T) {
 		t.Fatalf("status = %d, want 403", rr.Code)
 	}
 }
+
+func TestCopyAndMoveFileAPI(t *testing.T) {
+	dir := t.TempDir()
+	database, err := db.Open(filepath.Join(dir, "files.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { database.Close() })
+	store := servers.NewStore(database, nil, nil, 25565, 25575, dir, "")
+	if _, err := database.DB.Exec(`INSERT INTO servers(id,name,server_type,version,ram_mb,host_port,state,created_at,updated_at) VALUES('id','test','custom','custom',1024,0,'stopped','now','now')`); err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{servers: store}
+	if _, err := store.WriteFileContent("id", "source.txt", "hello copy/move"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Test Copy API
+	copyReq := httptest.NewRequest(http.MethodPost, "/api/servers/id/files/copy", bytes.NewBufferString(`{"source":"source.txt","destination":"copied.txt"}`))
+	copyReq.SetPathValue("id", "id")
+	rr := httptest.NewRecorder()
+	s.handleCopyFile(rr, copyReq)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("handleCopyFile status = %d: %s", rr.Code, rr.Body.String())
+	}
+
+	// Test Move API
+	moveReq := httptest.NewRequest(http.MethodPost, "/api/servers/id/files/move", bytes.NewBufferString(`{"source":"copied.txt","destination":"moved.txt"}`))
+	moveReq.SetPathValue("id", "id")
+	rr = httptest.NewRecorder()
+	s.handleMoveFile(rr, moveReq)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("handleMoveFile status = %d: %s", rr.Code, rr.Body.String())
+	}
+
+	content, err := store.ReadFileContent("id", "moved.txt")
+	if err != nil || content != "hello copy/move" {
+		t.Fatalf("moved content mismatch: %v, %q", err, content)
+	}
+}

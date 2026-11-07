@@ -1,4 +1,4 @@
-//go:build linux || darwin
+//go:build linux
 
 package servers
 
@@ -15,10 +15,13 @@ func dataDiskSpace(path string) (DataDisk, error) {
 	if stat.Blocks == 0 || stat.Bsize <= 0 {
 		return DataDisk{}, errors.New("filesystem size is not reported")
 	}
+	blockSize := uint64(stat.Bsize)
+	if stat.Frsize > 0 {
+		blockSize = uint64(stat.Frsize)
+	}
 	blocks := uint64(stat.Blocks)
 	free := min(uint64(stat.Bfree), blocks)
 	available := min(uint64(stat.Bavail), free)
-	blockSize := uint64(stat.Bsize)
 	return DataDisk{
 		Path: path, TotalBytes: blocks * blockSize,
 		UsedBytes: (blocks - free) * blockSize, AvailableBytes: available * blockSize,

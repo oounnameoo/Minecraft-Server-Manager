@@ -19,7 +19,7 @@ import (
 var ErrUnsafe = errors.New("unsafe storage path or file")
 var idPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$`)
 
-const MaxArchiveBytes int64 = 8 << 30
+const MaxArchiveBytes int64 = 64 << 30
 const MaxArchiveEntries = 100000
 const MaxUploadBytes int64 = 2 << 30
 
