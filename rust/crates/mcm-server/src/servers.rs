@@ -1,8 +1,8 @@
 use crate::auth::User;
-use crate::docker::{CreateOpts, DockerClient};
 use crate::error::ApiError;
 use crate::jars::download_server_jar;
 use crate::ports::allocate_port;
+use crate::runtime::{NativeRuntime, StartOpts};
 use axum::{
     Extension, Json,
     extract::{
@@ -16,11 +16,9 @@ use axum::{
     },
 };
 use chrono::Utc;
-use futures_util::StreamExt;
 use mcm_core::config::Config;
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tokio::sync::broadcast;
@@ -96,18 +94,18 @@ pub struct UpdateServerInput {
 pub struct ServerStore {
     pub db: Arc<Mutex<Connection>>,
     pub cfg: Arc<Config>,
-    pub docker: Option<DockerClient>,
+    pub runtime: NativeRuntime,
     pub http: reqwest::Client,
     pub install_tx: broadcast::Sender<(String, String)>,
 }
 
 impl ServerStore {
-    pub fn new(db: Arc<Mutex<Connection>>, cfg: Arc<Config>, docker: Option<DockerClient>) -> Self {
+    pub fn new(db: Arc<Mutex<Connection>>, cfg: Arc<Config>, runtime: NativeRuntime) -> Self {
         let (install_tx, _) = broadcast::channel(128);
         Self {
             db,
             cfg,
-            docker,
+            runtime,
             http: reqwest::Client::new(),
             install_tx,
         }
@@ -115,14 +113,6 @@ impl ServerStore {
 
     pub fn server_dir(&self, id: &str) -> PathBuf {
         PathBuf::from(&self.cfg.data_dir).join("servers").join(id)
-    }
-
-    pub fn server_host_dir(&self, id: &str) -> String {
-        if self.cfg.data_dir_host.is_empty() {
-            format!("{}/servers/{id}", self.cfg.data_dir.display())
-        } else {
-            format!("{}/servers/{id}", self.cfg.data_dir_host)
-        }
     }
 
     pub fn list(&self) -> Result<Vec<Server>, ApiError> {
@@ -296,12 +286,8 @@ impl ServerStore {
     }
 
     pub async fn delete(&self, id: &str) -> Result<(), ApiError> {
-        let srv = self.get(id)?;
-        if let Some(docker) = &self.docker
-            && !srv.container_id.is_empty()
-        {
-            let _ = docker.remove_container(&srv.container_id).await;
-        }
+        let _ = self.get(id)?;
+        let _ = self.runtime.kill(id).await;
         let dir = self.server_dir(id);
         let _ = tokio::fs::remove_dir_all(&dir).await;
         let conn = self.db.lock().unwrap();
@@ -311,57 +297,34 @@ impl ServerStore {
 
     pub async fn start(&self, id: &str) -> Result<Server, ApiError> {
         let srv = self.get(id)?;
-        let docker = self
-            .docker
-            .as_ref()
-            .ok_or_else(|| ApiError::internal("container runtime unavailable"))?;
-
-        let mut container_id = srv.container_id.clone();
-        if container_id.is_empty() {
-            let opts = CreateOpts {
-                name: srv.id.clone(),
-                image: self.cfg.server_image.clone(),
-                data_dir_host: self.server_host_dir(&srv.id),
-                host_port: srv.host_port,
-                container_port: 25565,
+        let pid = self
+            .runtime
+            .start(StartOpts {
+                server_id: srv.id.clone(),
+                server_dir: self.server_dir(&srv.id),
                 ram_mb: srv.ram_mb,
-                cpu_limit: srv.cpu_limit,
                 memory_limit_mb: srv.memory_limit_mb,
-                jvm_flags: String::new(),
+                java_version: srv.java_version,
                 start_command: srv.start_command.clone(),
-                java_version: srv.java_version.to_string(),
-                env_vars: HashMap::new(),
-            };
-            container_id = docker
-                .create_container(&opts)
-                .await
-                .map_err(|e| ApiError::internal(format!("create container: {e}")))?;
-        }
-
-        docker
-            .start_container(&container_id)
+                host_port: srv.host_port,
+            })
             .await
-            .map_err(|e| ApiError::internal(format!("start container: {e}")))?;
+            .map_err(|e| ApiError::internal(format!("start server process: {e}")))?;
 
         let now = Utc::now().to_rfc3339();
         {
             let conn = self.db.lock().unwrap();
             conn.execute(
                 "UPDATE servers SET container_id=?1, state='running', started_at=?2, updated_at=?3 WHERE id=?4",
-                params![container_id, now, now, id],
+                params![format!("pid:{pid}"), now, now, id],
             )?;
         }
         self.get(id)
     }
 
     pub async fn stop(&self, id: &str) -> Result<Server, ApiError> {
-        let srv = self.get(id)?;
-        if let Some(docker) = &self.docker
-            && !srv.container_id.is_empty()
-        {
-            let _ = docker.send_stdin_command(&srv.container_id, "stop").await;
-            let _ = docker.stop_container(&srv.container_id, 20).await;
-        }
+        let _ = self.get(id)?;
+        let _ = self.runtime.stop(id, 20).await;
         let now = Utc::now().to_rfc3339();
         {
             let conn = self.db.lock().unwrap();
@@ -374,12 +337,8 @@ impl ServerStore {
     }
 
     pub async fn kill(&self, id: &str) -> Result<Server, ApiError> {
-        let srv = self.get(id)?;
-        if let Some(docker) = &self.docker
-            && !srv.container_id.is_empty()
-        {
-            let _ = docker.kill_container(&srv.container_id).await;
-        }
+        let _ = self.get(id)?;
+        let _ = self.runtime.kill(id).await;
         let now = Utc::now().to_rfc3339();
         {
             let conn = self.db.lock().unwrap();
@@ -397,20 +356,7 @@ impl ServerStore {
     }
 
     pub async fn recreate(&self, id: &str) -> Result<Server, ApiError> {
-        let srv = self.get(id)?;
-        if let Some(docker) = &self.docker
-            && !srv.container_id.is_empty()
-        {
-            let _ = docker.remove_container(&srv.container_id).await;
-        }
-        let now = Utc::now().to_rfc3339();
-        {
-            let conn = self.db.lock().unwrap();
-            conn.execute(
-                "UPDATE servers SET container_id='', state='stopped', updated_at=?1 WHERE id=?2",
-                params![now, id],
-            )?;
-        }
+        let _ = self.stop(id).await?;
         self.start(id).await
     }
 
@@ -509,12 +455,11 @@ pub async fn handle_get_server(
 ) -> Result<impl IntoResponse, ApiError> {
     check_server_perm(&user, &id, "servers.view")?;
     let mut srv = store.get(&id)?;
-    if let Some(docker) = &store.docker
-        && !srv.container_id.is_empty()
-        && let Some(live) = docker.inspect_status(&srv.container_id).await
-    {
-        srv.state = live;
-    }
+    srv.state = if store.runtime.is_running(&id).await {
+        "running".to_string()
+    } else {
+        "stopped".to_string()
+    };
     Ok(Json(srv))
 }
 
@@ -591,13 +536,11 @@ pub async fn handle_server_status(
 ) -> Result<impl IntoResponse, ApiError> {
     check_server_perm(&user, &id, "servers.view")?;
     let srv = store.get(&id)?;
-    let mut state = srv.state.clone();
-    if let Some(docker) = &store.docker
-        && !srv.container_id.is_empty()
-        && let Some(live) = docker.inspect_status(&srv.container_id).await
-    {
-        state = live;
-    }
+    let state = if store.runtime.is_running(&id).await {
+        "running".to_string()
+    } else {
+        "stopped".to_string()
+    };
     Ok(Json(serde_json::json!({
         "id": srv.id,
         "state": state,
@@ -613,23 +556,7 @@ pub async fn handle_server_stats(
 ) -> Result<impl IntoResponse, ApiError> {
     check_server_perm(&user, &id, "performance.read")?;
     let srv = store.get(&id)?;
-    if srv.container_id.is_empty() {
-        return Ok(Json(serde_json::json!({
-            "cpu_percent": 0.0,
-            "memory_used_mb": 0.0,
-            "memory_limit_mb": srv.ram_mb as f64,
-            "memory_percent": 0.0,
-            "network_rx_bytes": 0,
-            "network_tx_bytes": 0,
-        })));
-    }
-    let Some(docker) = &store.docker else {
-        return Err(ApiError::internal("container runtime unavailable"));
-    };
-    let stats = docker
-        .stats_once(&srv.container_id)
-        .await
-        .map_err(|e| ApiError::internal(format!("stats: {e}")))?;
+    let stats = store.runtime.stats(&id, srv.ram_mb).await;
     Ok(Json(serde_json::json!(stats)))
 }
 
@@ -645,18 +572,12 @@ pub async fn handle_console_command(
     Json(req): Json<ConsoleCommandReq>,
 ) -> Result<impl IntoResponse, ApiError> {
     check_server_perm(&user, &id, "console.write")?;
-    let srv = store.get(&id)?;
-    if srv.container_id.is_empty() {
-        return Err(ApiError::bad_request("server container is not created"));
-    }
-    let docker = store
-        .docker
-        .as_ref()
-        .ok_or_else(|| ApiError::internal("container runtime unavailable"))?;
-    docker
-        .send_stdin_command(&srv.container_id, &req.command)
+    let _ = store.get(&id)?;
+    store
+        .runtime
+        .send_command(&id, &req.command)
         .await
-        .map_err(|e| ApiError::internal(format!("send command: {e}")))?;
+        .map_err(|e| ApiError::bad_request(format!("send command: {e}")))?;
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
@@ -677,17 +598,12 @@ pub async fn handle_server_logs(
     Query(q): Query<LogsQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
     check_server_perm(&user, &id, "logs.read")?;
-    let srv = store.get(&id)?;
-    if srv.container_id.is_empty() {
-        return Ok(Json(serde_json::json!({ "lines": Vec::<String>::new() })));
-    }
-    let Some(docker) = &store.docker else {
-        return Ok(Json(serde_json::json!({ "lines": Vec::<String>::new() })));
-    };
-    let lines = docker
-        .logs_tail(&srv.container_id, &q.tail)
-        .await
-        .unwrap_or_default();
+    let _ = store.get(&id)?;
+    let tail = q.tail.parse::<usize>().unwrap_or(200);
+    let lines = store
+        .runtime
+        .logs_tail(&id, &store.server_dir(&id), tail)
+        .await;
     Ok(Json(serde_json::json!({ "lines": lines })))
 }
 
@@ -703,34 +619,33 @@ pub async fn handle_console_ws(
 }
 
 async fn console_ws_loop(mut socket: WebSocket, store: ServerStore, srv: Server) {
-    let Some(docker) = store.docker.clone() else {
-        let _ = socket
-            .send(Message::Text("Container runtime unavailable".into()))
-            .await;
-        return;
-    };
-    if srv.container_id.is_empty() {
+    let Some((snapshot, mut rx)) = store.runtime.subscribe_logs(&srv.id).await else {
         let _ = socket.send(Message::Text("Server is stopped".into())).await;
         return;
+    };
+    for line in snapshot {
+        if socket.send(Message::Text(line.into())).await.is_err() {
+            return;
+        }
     }
 
-    let mut log_stream = Box::pin(docker.logs_stream(&srv.container_id, "100"));
     loop {
         tokio::select! {
-            next_log = log_stream.next() => {
+            next_log = rx.recv() => {
                 match next_log {
-                    Some(Ok(line)) => {
+                    Ok(line) => {
                         if socket.send(Message::Text(line.into())).await.is_err() {
                             break;
                         }
                     }
-                    _ => break,
+                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(_) => break,
                 }
             }
             next_ws = socket.recv() => {
                 match next_ws {
                     Some(Ok(Message::Text(cmd))) => {
-                        let _ = docker.send_stdin_command(&srv.container_id, &cmd).await;
+                        let _ = store.runtime.send_command(&srv.id, &cmd).await;
                     }
                     Some(Ok(Message::Close(_))) | None => break,
                     _ => {}
@@ -747,15 +662,17 @@ pub async fn handle_console_sse(
 ) -> Result<Sse<impl futures_util::Stream<Item = Result<Event, std::convert::Infallible>>>, ApiError>
 {
     check_server_perm(&user, &id, "console.read")?;
-    let srv = store.get(&id)?;
+    let _ = store.get(&id)?;
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Event, std::convert::Infallible>>(64);
 
-    if let Some(docker) = store.docker.clone()
-        && !srv.container_id.is_empty()
-    {
+    if let Some((snapshot, mut log_rx)) = store.runtime.subscribe_logs(&id).await {
         tokio::spawn(async move {
-            let mut stream = Box::pin(docker.logs_stream(&srv.container_id, "100"));
-            while let Some(Ok(line)) = stream.next().await {
+            for line in snapshot {
+                if tx.send(Ok(Event::default().data(line))).await.is_err() {
+                    return;
+                }
+            }
+            while let Ok(line) = log_rx.recv().await {
                 if tx.send(Ok(Event::default().data(line))).await.is_err() {
                     break;
                 }

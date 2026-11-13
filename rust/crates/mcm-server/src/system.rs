@@ -19,17 +19,11 @@ pub async fn handle_runtime_status(
     if !user.has_permission("system.read") && !user.has_permission("servers.view") {
         return Err(ApiError::forbidden("missing permission"));
     }
-    let (connected, version) = match &store.docker {
-        Some(docker) => match docker.ping().await {
-            Ok(v) => (true, v),
-            Err(_) => (false, String::new()),
-        },
-        None => (false, String::new()),
-    };
+    let java_ver = store.runtime.java_version_string().await;
     Ok(Json(serde_json::json!({
-        "runtime": store.cfg.container_runtime,
-        "connected": connected,
-        "version": version,
+        "runtime": "native",
+        "connected": java_ver.is_some(),
+        "version": java_ver.unwrap_or_else(|| "java not found".to_string()),
         "backend": "rust",
         "panel_version": buildinfo::VERSION,
     })))

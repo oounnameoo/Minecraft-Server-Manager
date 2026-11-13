@@ -1,7 +1,6 @@
 mod assets;
 mod auth;
 mod backups;
-mod docker;
 mod error;
 mod files;
 mod jars;
@@ -9,6 +8,7 @@ mod players;
 mod ports;
 mod properties;
 mod routes;
+mod runtime;
 mod schedules;
 mod servers;
 mod system;
@@ -29,18 +29,11 @@ async fn main() -> Result<()> {
 
     let db = Db::open(&cfg.db_path)?;
     let db_conn = db.conn_arc();
-
-    let docker = match docker::DockerClient::connect(&cfg.docker_host) {
-        Ok(d) => Some(d),
-        Err(err) => {
-            eprintln!("warning: container runtime unavailable ({err}); running in degraded mode");
-            None
-        }
-    };
+    let runtime = runtime::NativeRuntime::new(db_conn.clone());
 
     let secure_cookies = !cfg.http_only;
     let auth_store = auth::AuthStore::new(db_conn.clone(), secure_cookies);
-    let server_store = servers::ServerStore::new(db_conn.clone(), cfg.clone(), docker);
+    let server_store = servers::ServerStore::new(db_conn.clone(), cfg.clone(), runtime);
 
     // Auto-start servers marked with auto_start = true
     let boot_servers = server_store.clone();
@@ -108,8 +101,9 @@ mod tests {
 
         let db = Db::open(&cfg.db_path).unwrap();
         let db_conn = db.conn_arc();
+        let runtime = runtime::NativeRuntime::new(db_conn.clone());
         let auth_store = auth::AuthStore::new(db_conn.clone(), false);
-        let server_store = servers::ServerStore::new(db_conn, Arc::new(cfg), None);
+        let server_store = servers::ServerStore::new(db_conn, Arc::new(cfg), runtime);
         routes::build_router(routes::AppState {
             auth: auth_store,
             servers: server_store,

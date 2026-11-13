@@ -13,7 +13,6 @@ mcm-core = { path = "../mcm-core" }
 anyhow.workspace = true
 axum.workspace = true
 axum-server.workspace = true
-bollard.workspace = true
 chrono.workspace = true
 clap.workspace = true
 futures-util.workspace = true

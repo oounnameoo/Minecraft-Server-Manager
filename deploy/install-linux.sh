@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# System-wide installer for MCM (Minecraft Container Manager) on Debian / Ubuntu servers.
-# Usage: sudo ./deploy/install-linux.sh [--port 8080] [--data-dir /var/lib/mcm] [--non-interactive] [--uninstall]
+# Native Linux installer for MCM (Minecraft Server Manager) on Debian / Ubuntu.
+# No Docker or Podman required — Minecraft servers run natively via Java + systemd.
+# Usage: sudo ./deploy/install-linux.sh [--port 8080] [--data-dir /var/lib/mcm] [--http-only] [--non-interactive] [--uninstall]
 set -Eeuo pipefail
 
 APP_NAME="mcm"
@@ -34,7 +35,7 @@ Options:
   --data-dir <path>     Persistent data directory (default: /var/lib/mcm)
   --http-only           Serve HTTP instead of self-signed HTTPS
   --non-interactive     Do not prompt; use flags or defaults
-  --uninstall           Stop/disable service and remove binary & unit (keeps /var/lib/mcm and /etc/mcm)
+  --uninstall           Stop/disable service and remove binaries & unit (keeps /var/lib/mcm and /etc/mcm)
   -h, --help            Show this help message
 EOF
 }
@@ -89,22 +90,6 @@ if [[ "$UNINSTALL" == "true" ]]; then
   exit 0
 fi
 
-# Validate OS (Debian / Ubuntu)
-if [[ -r /etc/os-release ]]; then
-  # shellcheck disable=SC1091
-  . /etc/os-release
-  case "${ID:-}" in
-    debian|ubuntu|raspbian|linuxmint|pop)
-      say "Detected supported OS: ${PRETTY_NAME:-$ID}"
-      ;;
-    *)
-      say "Warning: '${ID:-unknown}' is not explicitly Debian/Ubuntu. Proceeding with apt-based setup..."
-      ;;
-  esac
-else
-  die "Cannot detect OS (/etc/os-release missing)."
-fi
-
 [[ "$PORT" =~ ^[0-9]+$ ]] && (( PORT >= 1 && PORT <= 65535 )) || die "Invalid port: $PORT"
 [[ "$DATA_DIR" == /* ]] || die "--data-dir must be an absolute path: $DATA_DIR"
 
@@ -115,85 +100,47 @@ if [[ "$NON_INTERACTIVE" != "true" && -t 0 ]]; then
   if [[ -n "${input_dir:-}" ]]; then DATA_DIR="$input_dir"; fi
 fi
 
-say "Installing base dependencies via apt..."
+say "Installing Java runtime and base dependencies via apt..."
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-apt-get install -y -qq ca-certificates curl git openssl
-
-if ! command -v docker >/dev/null 2>&1; then
-  say "Docker not found. Installing Docker Engine (docker.io)..."
-  apt-get install -y -qq docker.io
-fi
-
-if command -v systemctl >/dev/null 2>&1; then
-  systemctl enable --now docker >/dev/null 2>&1 || true
-fi
-
-docker info >/dev/null 2>&1 || die "Docker daemon is not running or inaccessible."
+apt-get install -y -qq ca-certificates curl openssl openjdk-21-jre-headless
 
 if [[ -x "$SCRIPT_DIR/bin/mcm" && -x "$SCRIPT_DIR/bin/mcm-cli" ]]; then
-  say "Installing pre-built $APP_NAME and mcm-cli binaries from $SCRIPT_DIR/bin..."
+  say "Installing pre-built $APP_NAME and mcm-cli binaries..."
   install -m 755 "$SCRIPT_DIR/bin/mcm" "$BIN_PATH"
   install -m 755 "$SCRIPT_DIR/bin/mcm-cli" "$CLI_BIN_PATH"
-  say "Installed binaries to $BIN_PATH and $CLI_BIN_PATH"
 else
-  say "Building $APP_NAME binary using Docker multi-stage build..."
-  BUILD_COMMIT="$(git -C "$REPO_DIR" rev-parse HEAD 2>/dev/null || echo unknown)"
-  BUILD_DIRTY="false"
-  if [[ -n "$(git -C "$REPO_DIR" status --porcelain 2>/dev/null || true)" ]]; then
-    BUILD_DIRTY="true"
+  if ! command -v cargo >/dev/null 2>&1; then
+    say "Rust toolchain not found; installing build dependencies and rustup..."
+    apt-get install -y -qq build-essential pkg-config cmake
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+    export PATH="$HOME/.cargo/bin:$PATH"
   fi
-
-  IMAGE_TAG="mcm-linux-builder:latest"
-  docker build \
-    --target runtime \
-    --build-arg "MCM_BUILD_COMMIT=$BUILD_COMMIT" \
-    --build-arg "MCM_BUILD_DIRTY=$BUILD_DIRTY" \
-    -t "$IMAGE_TAG" \
-    "$REPO_DIR"
-
-  TMP_CONTAINER="$(docker create "$IMAGE_TAG")"
-  trap 'docker rm -f "$TMP_CONTAINER" >/dev/null 2>&1 || true' EXIT
-  docker cp "$TMP_CONTAINER:/usr/local/bin/mcm" "$BIN_PATH.tmp"
-  chmod 755 "$BIN_PATH.tmp"
-  mv -f "$BIN_PATH.tmp" "$BIN_PATH"
-  docker cp "$TMP_CONTAINER:/usr/local/bin/mcm-cli" "$CLI_BIN_PATH.tmp"
-  chmod 755 "$CLI_BIN_PATH.tmp"
-  mv -f "$CLI_BIN_PATH.tmp" "$CLI_BIN_PATH"
-  docker rm -f "$TMP_CONTAINER" >/dev/null 2>&1 || true
-  trap - EXIT
-  say "Installed binaries to $BIN_PATH and $CLI_BIN_PATH"
+  say "Building $APP_NAME and mcm-cli from source..."
+  (cd "$REPO_DIR/rust" && cargo build --release --workspace)
+  install -m 755 "$REPO_DIR/rust/target/release/mcm" "$BIN_PATH"
+  install -m 755 "$REPO_DIR/rust/target/release/mcm-cli" "$CLI_BIN_PATH"
 fi
 
-# Create mcm system user and add to docker group
 if ! getent group "$APP_NAME" >/dev/null 2>&1; then
   groupadd --system "$APP_NAME"
 fi
 if ! id -u "$APP_NAME" >/dev/null 2>&1; then
   useradd --system --gid "$APP_NAME" --home-dir "$DATA_DIR" --shell /usr/sbin/nologin "$APP_NAME"
 fi
-if getent group docker >/dev/null 2>&1; then
-  usermod -aG docker "$APP_NAME"
-fi
 
-# Prepare directories
 mkdir -p "$DATA_DIR" "$DATA_DIR/backups" "$DATA_DIR/servers" "$CONFIG_DIR"
 chown -R "$APP_NAME:$APP_NAME" "$DATA_DIR"
 
-# Generate or preserve configuration
 if [[ ! -f "$ENV_FILE" ]]; then
   SESSION_SECRET="$(openssl rand -hex 32)"
   cat > "$ENV_FILE" <<EOF
 # MCM System Service Configuration
 MCM_ADDR=:$PORT
 MCM_DATA_DIR=$DATA_DIR
-MCM_DATA_DIR_HOST=$DATA_DIR
 MCM_BACKUP_DIR=$DATA_DIR/backups
 MCM_DB_PATH=$DATA_DIR/mcm.db
-MCM_CONTAINER_RUNTIME=docker
-DOCKER_HOST=unix:///var/run/docker.sock
 MCM_PORT_RANGE=25565-25665
-MCM_SERVER_IMAGE=eclipse-temurin:21-jre-alpine
 MCM_HTTP_ONLY=$HTTP_ONLY
 MCM_SESSION_SECRET=$SESSION_SECRET
 EOF
@@ -204,39 +151,40 @@ fi
 chown root:"$APP_NAME" "$ENV_FILE"
 chmod 640 "$ENV_FILE"
 
-# Install systemd service unit
 cat > "$UNIT_PATH" <<EOF
 [Unit]
-Description=MCM - Minecraft Container Manager
-After=network-online.target docker.service
+Description=MCM - Minecraft Server Manager
+After=network-online.target
 Wants=network-online.target
-Requires=docker.service
 
 [Service]
 Type=simple
 User=$APP_NAME
 Group=$APP_NAME
-SupplementaryGroups=docker
-ExecStart=$BIN_PATH
 EnvironmentFile=$ENV_FILE
 WorkingDirectory=$DATA_DIR
+ExecStart=$BIN_PATH
 Restart=always
-RestartSec=5
+RestartSec=3
 LimitNOFILE=65536
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
-if command -v systemctl >/dev/null 2>&1 && [[ -d /run/systemd/system ]]; then
+if command -v systemctl >/dev/null 2>&1; then
   systemctl daemon-reload
   systemctl enable --now "$SERVICE_NAME"
-  systemctl restart "$SERVICE_NAME"
-  say "Systemd service $SERVICE_NAME is active."
-else
-  say "systemd is not running as PID 1; wrote $UNIT_PATH."
+  say "Service $SERVICE_NAME is enabled and running."
 fi
 
 PROTO="https"
-[[ "$HTTP_ONLY" == "true" ]] && PROTO="http"
-say "MCM installation complete! Access the panel at $PROTO://<SERVER_IP>:$PORT"
+if [[ "$HTTP_ONLY" == "true" ]]; then
+  PROTO="http"
+fi
+HOST_IP="$(hostname -I 2>/dev/null | awk '{print $1}' || echo 'localhost')"
+
+say "Installation complete!"
+say "  Panel URL : ${PROTO}://${HOST_IP}:${PORT}"
+say "  CLI       : mcm-cli --url ${PROTO}://localhost:${PORT} -k login"
+say "  Logs      : journalctl -u $SERVICE_NAME -f"

@@ -56,18 +56,12 @@ pub async fn handle_add_op(
     Json(req): Json<PlayerNameReq>,
 ) -> Result<impl IntoResponse, ApiError> {
     check_server_perm(&user, &id, "ops.manage")?;
-    let srv = store.get(&id)?;
+    let _ = store.get(&id)?;
     let name = req.name.trim();
     if name.is_empty() {
         return Err(ApiError::bad_request("player name is required"));
     }
-    if let Some(docker) = &store.docker
-        && !srv.container_id.is_empty()
-    {
-        let _ = docker
-            .send_stdin_command(&srv.container_id, &format!("op {name}"))
-            .await;
-    }
+    let _ = store.runtime.send_command(&id, &format!("op {name}")).await;
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
@@ -77,14 +71,11 @@ pub async fn handle_remove_op(
     Path((id, name)): Path<(String, String)>,
 ) -> Result<impl IntoResponse, ApiError> {
     check_server_perm(&user, &id, "ops.manage")?;
-    let srv = store.get(&id)?;
-    if let Some(docker) = &store.docker
-        && !srv.container_id.is_empty()
-    {
-        let _ = docker
-            .send_stdin_command(&srv.container_id, &format!("deop {name}"))
-            .await;
-    }
+    let _ = store.get(&id)?;
+    let _ = store
+        .runtime
+        .send_command(&id, &format!("deop {name}"))
+        .await;
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
@@ -111,18 +102,15 @@ pub async fn handle_add_whitelist(
     Json(req): Json<PlayerNameReq>,
 ) -> Result<impl IntoResponse, ApiError> {
     check_server_perm(&user, &id, "whitelist.manage")?;
-    let srv = store.get(&id)?;
+    let _ = store.get(&id)?;
     let name = req.name.trim();
     if name.is_empty() {
         return Err(ApiError::bad_request("player name is required"));
     }
-    if let Some(docker) = &store.docker
-        && !srv.container_id.is_empty()
-    {
-        let _ = docker
-            .send_stdin_command(&srv.container_id, &format!("whitelist add {name}"))
-            .await;
-    }
+    let _ = store
+        .runtime
+        .send_command(&id, &format!("whitelist add {name}"))
+        .await;
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
@@ -132,13 +120,10 @@ pub async fn handle_remove_whitelist(
     Path((id, name)): Path<(String, String)>,
 ) -> Result<impl IntoResponse, ApiError> {
     check_server_perm(&user, &id, "whitelist.manage")?;
-    let srv = store.get(&id)?;
-    if let Some(docker) = &store.docker
-        && !srv.container_id.is_empty()
-    {
-        let _ = docker
-            .send_stdin_command(&srv.container_id, &format!("whitelist remove {name}"))
-            .await;
-    }
+    let _ = store.get(&id)?;
+    let _ = store
+        .runtime
+        .send_command(&id, &format!("whitelist remove {name}"))
+        .await;
     Ok(Json(serde_json::json!({ "ok": true })))
 }
