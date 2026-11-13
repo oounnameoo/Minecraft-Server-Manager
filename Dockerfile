@@ -24,37 +24,39 @@ ARG MCM_BUILD_COMMIT=unknown
 RUN MCM_BUILD_COMMIT="$MCM_BUILD_COMMIT" pnpm build
 
 ###############################################################################
-# Go build stage
+# Rust build stage
 ###############################################################################
-FROM docker.io/library/golang:1.26-alpine AS go
+FROM docker.io/library/rust:1-alpine AS rust
+
+RUN apk add --no-cache musl-dev gcc g++ make cmake perl pkgconfig
 
 WORKDIR /src
 
-# Copy the module manifest first, then the source. go.sum is required so the
-# build can verify module checksums.
-COPY go.mod go.sum ./
-
-COPY cmd/ ./cmd/
-COPY internal/ ./internal/
 COPY migrations/ ./migrations/
-
-# Overwrite the committed placeholder with the web worker's real build output.
-COPY --from=web /app/web/dist ./internal/web/dist
+COPY rust/ ./rust/
+COPY --from=web /app/web/dist ./web/dist
 
 ARG MCM_BUILD_COMMIT=unknown
 ARG MCM_BUILD_DIRTY=false
 ARG MCM_BUILD_TIME
-RUN go mod download && \
-    CGO_ENABLED=0 go build -ldflags "-X github.com/mcm-panel/mcm/internal/buildinfo.Commit=${MCM_BUILD_COMMIT} -X github.com/mcm-panel/mcm/internal/buildinfo.Dirty=${MCM_BUILD_DIRTY} -X github.com/mcm-panel/mcm/internal/buildinfo.BuiltAt=${MCM_BUILD_TIME:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}" -o /out/mcm ./cmd/mcm
+WORKDIR /src/rust
+RUN MCM_BUILD_COMMIT="${MCM_BUILD_COMMIT}" \
+    MCM_BUILD_DIRTY="${MCM_BUILD_DIRTY}" \
+    MCM_BUILD_TIME="${MCM_BUILD_TIME:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}" \
+    cargo build --release --workspace && \
+    mkdir -p /out && \
+    cp target/release/mcm /out/mcm && \
+    cp target/release/mcm-cli /out/mcm-cli
 
 ###############################################################################
 # Runtime stage
 ###############################################################################
 FROM docker.io/library/alpine:3.20 AS runtime
 
-RUN apk add --no-cache ca-certificates tzdata su-exec
+RUN apk add --no-cache ca-certificates tzdata su-exec libgcc
 
-COPY --from=go /out/mcm /usr/local/bin/mcm
+COPY --from=rust /out/mcm /usr/local/bin/mcm
+COPY --from=rust /out/mcm-cli /usr/local/bin/mcm-cli
 COPY docker/entrypoint.sh /entrypoint.sh
 
 RUN chmod +x /entrypoint.sh && mkdir -p /data

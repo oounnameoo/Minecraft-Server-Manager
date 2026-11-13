@@ -47,6 +47,8 @@ export function ServerSettings({
   ]);
   const [cpuLimit, setCpuLimit] = useState(server.cpu_limit ?? 0);
   const [memoryLimitMb, setMemoryLimitMb] = useState(server.memory_limit_mb ?? 0);
+  const [autoStart, setAutoStart] = useState(Boolean(server.auto_start));
+  const [startCommand, setStartCommand] = useState(server.start_command ?? '');
   const [extraPorts, setExtraPorts] = useState<ExtraPort[]>(server.extra_ports ?? []);
   const [tab, setTab] = useState<SettingsTab>('general');
   const [error, setError] = useState<string | null>(null);
@@ -184,6 +186,8 @@ export function ServerSettings({
         cpu_limit: cpuLimit,
         memory_limit_mb: memoryLimitMb,
         extra_ports: extraPorts,
+        auto_start: autoStart,
+        start_command: startCommand.trim(),
       });
       if (updated.needs_rebuild) {
         setSavedNotice('Settings saved. Container rebuild required for memory and container settings to take effect.');
@@ -305,6 +309,36 @@ export function ServerSettings({
                 />
                 <p className="text-xs text-muted-foreground">
                   Changes take effect after rebuilding the container.
+                </p>
+              </div>
+              <div className="flex items-start justify-between gap-4 rounded-lg border p-3">
+                <div className="space-y-0.5">
+                  <Label htmlFor="edit-auto-start" className="text-sm font-medium">
+                    Auto-start on boot
+                  </Label>
+                  <p className="text-xs text-muted-foreground">
+                    Automatically start this server whenever MCM starts up.
+                  </p>
+                </div>
+                <input
+                  id="edit-auto-start"
+                  type="checkbox"
+                  checked={autoStart}
+                  onChange={(e) => setAutoStart(e.target.checked)}
+                  className="mt-1 h-4 w-4 rounded border-input accent-primary"
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="edit-start-command">Custom start command</Label>
+                <Input
+                  id="edit-start-command"
+                  value={startCommand}
+                  onChange={(e) => setStartCommand(e.target.value)}
+                  placeholder="java -Xms512M -Xmx${RAM_MB}M -jar server.jar nogui"
+                  className="font-mono text-xs"
+                />
+                <p className="text-xs text-muted-foreground">
+                  Optional shell command run inside <code>/data</code> instead of the default launcher. Leave blank to use the default launcher. Requires rebuilding the container.
                 </p>
               </div>
               <div className="space-y-1.5">

@@ -103,7 +103,8 @@ class ManagerTests(unittest.TestCase):
         self.source.mkdir()
         shutil.copy(ROOT / 'mcmctl', self.source / 'mcmctl')
         shutil.copy(ROOT / 'Dockerfile', self.source / 'Dockerfile')
-        shutil.copy(ROOT / 'go.mod', self.source / 'go.mod')
+        (self.source / 'rust').mkdir()
+        shutil.copy(ROOT / 'rust' / 'Cargo.toml', self.source / 'rust' / 'Cargo.toml')
         self.stubbin = self.root / 'stubs'
         self.stubbin.mkdir()
         for name in ('uname', 'id', 'flock', 'loginctl', 'podman', 'docker', 'systemctl', 'curl', 'git', 'sleep', 'journalctl'):
@@ -442,7 +443,7 @@ class ManagerTests(unittest.TestCase):
             'GIT_TERMINAL_PROMPT': '0',
         })
         self.git(self.source, 'init', '--initial-branch=main')
-        self.git(self.source, 'add', 'mcmctl', 'Dockerfile', 'go.mod')
+        self.git(self.source, 'add', 'mcmctl', 'Dockerfile', 'rust/Cargo.toml')
         self.git(self.source, 'commit', '-m', 'Initial source')
         self.remote = self.root / 'remote.git'
         self.remote.mkdir()

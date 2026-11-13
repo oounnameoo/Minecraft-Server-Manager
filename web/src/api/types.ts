@@ -57,6 +57,8 @@ export interface Server {
   uptime_seconds?: number;
   needs_rebuild?: boolean;
   rebuild_reasons?: string[];
+  auto_start?: boolean;
+  start_command?: string;
   created_at: string;
   updated_at: string;
 }

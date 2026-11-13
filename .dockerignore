@@ -10,6 +10,9 @@ data
 *.db-shm
 .env
 /mcm
+/mcm-cli
+dist
+rust/target
 coverage
 *.log
 .DS_Store

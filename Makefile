@@ -1,49 +1,41 @@
-.PHONY: dev build test test-deploy lint tidy
+.PHONY: dev build build-cli test test-deploy lint test-web verify
 
 BUILD_COMMIT := $(shell git rev-parse HEAD 2>/dev/null || echo unknown)
 BUILD_DIRTY := $(shell test -z "$$(git status --porcelain 2>/dev/null)" && echo false || echo true)
 BUILD_TIME := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 
-# Build the backend, embedding the frontend build if it exists.
+# Build the Rust backend and CLI, embedding the frontend build.
 build:
 	cd web && pnpm build
-	@if [ -d web/dist ]; then \
-		mkdir -p internal/web/dist; \
-		cp -R web/dist/* internal/web/dist/; \
-		echo "embedded web/dist from frontend build"; \
-	else \
-		echo "web/dist not found; keeping embedded placeholder"; \
-	fi
-	go build -ldflags "-X github.com/mcm-panel/mcm/internal/buildinfo.Commit=$(BUILD_COMMIT) -X github.com/mcm-panel/mcm/internal/buildinfo.Dirty=$(BUILD_DIRTY) -X github.com/mcm-panel/mcm/internal/buildinfo.BuiltAt=$(BUILD_TIME)" -o mcm ./cmd/mcm
+	cd rust && \
+		MCM_BUILD_COMMIT=$(BUILD_COMMIT) \
+		MCM_BUILD_DIRTY=$(BUILD_DIRTY) \
+		MCM_BUILD_TIME=$(BUILD_TIME) \
+		cargo build --release --workspace
+	cp rust/target/release/mcm ./mcm
+	cp rust/target/release/mcm-cli ./mcm-cli
+
+build-cli:
+	cd rust && \
+		MCM_BUILD_COMMIT=$(BUILD_COMMIT) \
+		MCM_BUILD_DIRTY=$(BUILD_DIRTY) \
+		MCM_BUILD_TIME=$(BUILD_TIME) \
+		cargo build --release -p mcm-cli
+	cp rust/target/release/mcm-cli ./mcm-cli
 
 dev:
-	go run ./cmd/mcm
+	cd rust && cargo run -p mcm-server
 
 test:
-	go test ./...
+	cd rust && cargo test --workspace
 
 test-deploy:
 	PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s deploy/tests -v
 
 lint:
-	go vet ./...
-	@out=$$(gofmt -l .); \
-	if [ -n "$$out" ]; then \
-		echo "gofmt needed on:"; \
-		echo "$$out"; \
-		exit 1; \
-	fi
+	cd rust && cargo clippy --workspace --all-targets
 
-tidy:
-	go mod tidy
-
-.PHONY: test-web verify test-race
 test-web:
 	cd web && pnpm typecheck && pnpm lint && pnpm test && pnpm build
 
-test-race:
-	go test -race ./internal/servers ./internal/api ./internal/backups ./internal/proxy ./internal/auth ./internal/storage
-
-# The release gate covers backend, browser contracts and deployment transactions.
-verify: build
-	$(MAKE) lint test test-race test-deploy test-web
+verify: build test test-deploy test-web

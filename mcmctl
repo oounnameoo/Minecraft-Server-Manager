@@ -462,7 +462,7 @@ load_state() {
 command_source_dir() {
     local directory
     directory=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P) || return 1
-    [[ -f "$directory/Dockerfile" && -f "$directory/go.mod" && -f "$directory/mcmctl" ]] || return 1
+    [[ -f "$directory/Dockerfile" && -f "$directory/rust/Cargo.toml" && -f "$directory/mcmctl" ]] || return 1
     printf '%s' "$directory"
 }
 

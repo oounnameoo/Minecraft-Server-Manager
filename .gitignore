@@ -8,6 +8,9 @@ web/.vite/
 .env
 data/
 /mcm
+/mcm-cli
+dist/
+rust/target/
 TODO.md
 *.db
 *.db-wal

@@ -1,0 +1,28 @@
+#cloud-config
+# Cloud-init configuration to turn a fresh Debian/Ubuntu VM or bare-metal
+# machine into a Home Assistant-style MCM (Minecraft Container Manager) Appliance.
+#
+# Usage: Pass as user-data to Proxmox / KVM / cloud-init / Raspberry Pi Imager.
+# After first boot, open https://mcm.local:8080 in your browser.
+
+hostname: mcm
+manage_etc_hosts: true
+
+package_update: true
+packages:
+  - ca-certificates
+  - curl
+  - git
+  - openssl
+  - docker.io
+  - avahi-daemon
+  - libnss-mdns
+  - ufw
+
+runcmd:
+  - systemctl enable --now docker
+  - |
+    if [ ! -d /opt/mcm-src ]; then
+      git clone https://github.com/your-org/Minecraft-Container-Manager.git /opt/mcm-src
+    fi
+  - cd /opt/mcm-src && bash ./deploy/mcm-appliance.sh --non-interactive --hostname mcm --port 8080 --data-dir /var/lib/mcm

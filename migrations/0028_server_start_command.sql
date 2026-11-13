@@ -1,0 +1,1 @@
+ALTER TABLE servers ADD COLUMN start_command TEXT NOT NULL DEFAULT '';

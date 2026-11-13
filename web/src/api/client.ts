@@ -939,6 +939,8 @@ export interface CreateServerInput {
   no_host_port?: boolean;
   java_version?: number;
   extra_ports?: ExtraPort[];
+  auto_start?: boolean;
+  start_command?: string;
 }
 
 export interface UpdateServerInput {
@@ -949,6 +951,8 @@ export interface UpdateServerInput {
   cpu_limit?: number;
   memory_limit_mb?: number;
   extra_ports?: ExtraPort[];
+  auto_start?: boolean;
+  start_command?: string;
 }
 
 export interface InstallInput {
