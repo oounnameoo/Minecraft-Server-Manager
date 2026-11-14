@@ -247,7 +247,20 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route(
             "/api/curseforge/settings",
-            get(|| async { axum::Json(serde_json::json!({ "configured": false, "source": "" })) }),
+            get(system::handle_get_curseforge_settings)
+                .put(system::handle_put_curseforge_settings)
+                .delete(system::handle_delete_curseforge_settings),
+        )
+        .route("/api/curseforge/{*path}", get(system::handle_curseforge_proxy))
+        .route("/api/proxy", get(system::handle_api_proxy))
+        .route("/api/servers/{id}/mods", get(system::handle_list_mods))
+        .route(
+            "/api/servers/{id}/mods/download",
+            post(system::handle_download_mod),
+        )
+        .route(
+            "/api/servers/{id}/mods/{name}",
+            delete(system::handle_delete_mod),
         )
         .route(
             "/api/servers/{id}/install",

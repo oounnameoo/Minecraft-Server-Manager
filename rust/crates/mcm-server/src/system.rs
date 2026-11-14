@@ -5,9 +5,10 @@ use crate::ports::{create_reservation, delete_reservation, list_reservations};
 use crate::servers::ServerStore;
 use axum::{
     Extension, Json,
-    extract::{Path, Query, State},
-    http::StatusCode,
-    response::IntoResponse,
+    body::Body,
+    extract::{Path, Query, RawQuery, State},
+    http::{HeaderValue, StatusCode, header},
+    response::{IntoResponse, Response},
 };
 use mcm_core::buildinfo;
 use serde::Deserialize;
@@ -279,4 +280,348 @@ pub async fn handle_get_settings(
         return Err(ApiError::forbidden("missing permission settings.manage"));
     }
     Ok(Json(serde_json::json!({ "settings": {} })))
+}
+
+fn with_db<T>(
+    db: &std::sync::Mutex<rusqlite::Connection>,
+    f: impl FnOnce(&rusqlite::Connection) -> rusqlite::Result<T>,
+) -> Result<T, ApiError> {
+    let conn = db
+        .lock()
+        .map_err(|_| ApiError::internal("database lock poisoned"))?;
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS kv_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+        [],
+    )
+    .map_err(|e| ApiError::internal(format!("db error: {e}")))?;
+    f(&conn).map_err(|e| ApiError::internal(format!("db error: {e}")))
+}
+
+fn load_curseforge_key(
+    db: &std::sync::Mutex<rusqlite::Connection>,
+) -> (Option<String>, &'static str) {
+    if let Ok(val) = std::env::var("MCM_CURSEFORGE_API_KEY")
+        && !val.trim().is_empty()
+    {
+        return (Some(val.trim().to_string()), "env");
+    }
+    let stored = with_db(db, |conn| {
+        let mut stmt = conn.prepare("SELECT value FROM kv_settings WHERE key = 'curseforge_api_key'")?;
+        let mut rows = stmt.query([])?;
+        if let Some(row) = rows.next()? {
+            let v: String = row.get(0)?;
+            Ok(Some(v))
+        } else {
+            Ok(None)
+        }
+    });
+    if let Ok(Some(val)) = stored
+        && !val.trim().is_empty()
+    {
+        return (Some(val.trim().to_string()), "database");
+    }
+    (None, "")
+}
+
+pub async fn handle_get_curseforge_settings(
+    State(store): State<ServerStore>,
+) -> impl IntoResponse {
+    let (key, source) = load_curseforge_key(&store.db);
+    Json(serde_json::json!({
+        "configured": key.is_some(),
+        "source": source,
+    }))
+}
+
+#[derive(Deserialize)]
+pub struct CurseForgeSettingsReq {
+    #[serde(default)]
+    pub api_key: String,
+}
+
+pub async fn handle_put_curseforge_settings(
+    State(store): State<ServerStore>,
+    Extension(user): Extension<User>,
+    Json(req): Json<CurseForgeSettingsReq>,
+) -> Result<impl IntoResponse, ApiError> {
+    if !user.has_permission("settings.manage") {
+        return Err(ApiError::forbidden("missing permission settings.manage"));
+    }
+    let trimmed = req.api_key.trim().to_string();
+    with_db(&store.db, |conn| {
+        if trimmed.is_empty() {
+            conn.execute("DELETE FROM kv_settings WHERE key = 'curseforge_api_key'", [])?;
+        } else {
+            conn.execute(
+                "INSERT INTO kv_settings (key, value) VALUES ('curseforge_api_key', ?1)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                [&trimmed],
+            )?;
+        }
+        Ok(())
+    })?;
+    let (key, source) = load_curseforge_key(&store.db);
+    Ok(Json(serde_json::json!({
+        "configured": key.is_some(),
+        "source": source,
+    })))
+}
+
+pub async fn handle_delete_curseforge_settings(
+    State(store): State<ServerStore>,
+    Extension(user): Extension<User>,
+) -> Result<impl IntoResponse, ApiError> {
+    if !user.has_permission("settings.manage") {
+        return Err(ApiError::forbidden("missing permission settings.manage"));
+    }
+    with_db(&store.db, |conn| {
+        conn.execute("DELETE FROM kv_settings WHERE key = 'curseforge_api_key'", [])?;
+        Ok(())
+    })?;
+    let (key, source) = load_curseforge_key(&store.db);
+    Ok(Json(serde_json::json!({
+        "configured": key.is_some(),
+        "source": source,
+    })))
+}
+
+#[derive(Deserialize)]
+pub struct ProxyQuery {
+    pub url: String,
+}
+
+pub async fn handle_api_proxy(
+    State(store): State<ServerStore>,
+    Query(query): Query<ProxyQuery>,
+) -> Result<Response, ApiError> {
+    let parsed = reqwest::Url::parse(&query.url)
+        .map_err(|_| ApiError::bad_request("invalid proxy url"))?;
+    if parsed.scheme() != "https" {
+        return Err(ApiError::bad_request("proxy url must use https"));
+    }
+    let host = parsed.host_str().unwrap_or("");
+    let allowed = matches!(
+        host,
+        "api.modrinth.com" | "hangar.papermc.io" | "api.spiget.org" | "api.curseforge.com"
+    );
+    if !allowed {
+        return Err(ApiError::forbidden(format!("host not allowed: {host}")));
+    }
+
+    let mut req = store
+        .http
+        .get(parsed.as_str())
+        .header("User-Agent", "mcm/0.1.0");
+    if host == "api.curseforge.com"
+        && let (Some(key), _) = load_curseforge_key(&store.db)
+    {
+        req = req.header("x-api-key", key);
+    }
+
+    forward_upstream(req).await
+}
+
+pub async fn handle_curseforge_proxy(
+    State(store): State<ServerStore>,
+    Path(path): Path<String>,
+    RawQuery(raw_query): RawQuery,
+) -> Result<Response, ApiError> {
+    let (Some(key), _) = load_curseforge_key(&store.db) else {
+        return Err(ApiError::bad_request(
+            "CurseForge API key is not configured",
+        ));
+    };
+    let clean_path = path.trim_start_matches('/');
+    let url = match raw_query {
+        Some(q) if !q.is_empty() => format!("https://api.curseforge.com/{clean_path}?{q}"),
+        _ => format!("https://api.curseforge.com/{clean_path}"),
+    };
+    let req = store
+        .http
+        .get(&url)
+        .header("User-Agent", "mcm/0.1.0")
+        .header("Accept", "application/json")
+        .header("x-api-key", key);
+    forward_upstream(req).await
+}
+
+async fn forward_upstream(req: reqwest::RequestBuilder) -> Result<Response, ApiError> {
+    let resp = req
+        .send()
+        .await
+        .map_err(|e| ApiError::internal(format!("upstream request failed: {e}")))?;
+    let status = StatusCode::from_u16(resp.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+    let content_type = resp
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("application/json")
+        .to_string();
+    let bytes = resp
+        .bytes()
+        .await
+        .map_err(|e| ApiError::internal(format!("read upstream body: {e}")))?;
+
+    let mut builder = Response::builder().status(status);
+    if let Ok(val) = HeaderValue::from_str(&content_type) {
+        builder = builder.header(header::CONTENT_TYPE, val);
+    }
+    builder
+        .body(Body::from(bytes))
+        .map_err(|e| ApiError::internal(format!("build proxy response: {e}")))
+}
+
+fn mods_folder_for_type(server_type: &str) -> &'static str {
+    match server_type.trim().to_lowercase().as_str() {
+        "fabric" | "forge" | "neoforge" | "quilt" => "mods",
+        _ => "plugins",
+    }
+}
+
+fn sanitize_jar_filename(name: &str) -> Result<String, ApiError> {
+    let base = std::path::Path::new(name.trim())
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("");
+    if base.is_empty() || base.contains("..") || base.contains('/') || base.contains('\\') {
+        return Err(ApiError::bad_request("invalid filename"));
+    }
+    Ok(base.to_string())
+}
+
+pub async fn handle_list_mods(
+    State(store): State<ServerStore>,
+    Extension(user): Extension<User>,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    if !user.has_permission("servers.view") {
+        return Err(ApiError::forbidden("missing permission servers.view"));
+    }
+    let srv = store.get(&id)?;
+    let kind = mods_folder_for_type(&srv.server_type);
+    let dir = store.server_dir(&id).join(kind);
+    let mut items = Vec::new();
+    if dir.is_dir()
+        && let Ok(entries) = std::fs::read_dir(&dir)
+    {
+        for entry in entries.flatten() {
+            let fname = entry.file_name().to_string_lossy().to_string();
+            if fname.ends_with(".jar") || fname.ends_with(".jar.disabled") {
+                let enabled = !fname.ends_with(".disabled");
+                let name = fname
+                    .strip_suffix(".jar.disabled")
+                    .or_else(|| fname.strip_suffix(".jar"))
+                    .unwrap_or(&fname)
+                    .to_string();
+                items.push(serde_json::json!({
+                    "name": name,
+                    "file": fname,
+                    "enabled": enabled,
+                }));
+            }
+        }
+    }
+    items.sort_by(|a, b| {
+        a.get("name")
+            .and_then(|v| v.as_str())
+            .cmp(&b.get("name").and_then(|v| v.as_str()))
+    });
+    Ok(Json(serde_json::json!({
+        "type": kind,
+        "items": items,
+    })))
+}
+
+#[derive(Deserialize)]
+pub struct DownloadModReq {
+    pub url: String,
+    pub filename: String,
+    pub delete_old_name: Option<String>,
+    pub project_id: Option<String>,
+    pub project_slug: Option<String>,
+    pub provider: Option<String>,
+}
+
+pub async fn handle_download_mod(
+    State(store): State<ServerStore>,
+    Extension(user): Extension<User>,
+    Path(id): Path<String>,
+    Json(req): Json<DownloadModReq>,
+) -> Result<impl IntoResponse, ApiError> {
+    if !user.has_permission("servers.files") && !user.has_permission("servers.manage") {
+        return Err(ApiError::forbidden("missing permission"));
+    }
+    let srv = store.get(&id)?;
+    let kind = mods_folder_for_type(&srv.server_type);
+    let dir = store.server_dir(&id).join(kind);
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| ApiError::internal(format!("create {kind} dir: {e}")))?;
+
+    let filename = sanitize_jar_filename(&req.filename)?;
+    let resp = store
+        .http
+        .get(&req.url)
+        .header("User-Agent", "mcm/0.1.0")
+        .send()
+        .await
+        .map_err(|e| ApiError::internal(format!("download mod failed: {e}")))?;
+    if !resp.status().is_success() {
+        return Err(ApiError::internal(format!(
+            "mod download returned HTTP {}",
+            resp.status()
+        )));
+    }
+    let bytes = resp
+        .bytes()
+        .await
+        .map_err(|e| ApiError::internal(format!("read mod bytes: {e}")))?;
+    let dest = dir.join(&filename);
+    tokio::fs::write(&dest, &bytes)
+        .await
+        .map_err(|e| ApiError::internal(format!("write mod file: {e}")))?;
+
+    if let Some(old) = req.delete_old_name
+        && let Ok(old_safe) = sanitize_jar_filename(&old)
+        && old_safe != filename
+    {
+        let _ = std::fs::remove_file(dir.join(&old_safe));
+    }
+
+    let name = filename
+        .strip_suffix(".jar")
+        .unwrap_or(&filename)
+        .to_string();
+    Ok(Json(serde_json::json!({
+        "name": name,
+        "file": filename,
+        "enabled": true,
+        "project_id": req.project_id,
+        "project_slug": req.project_slug,
+        "provider": req.provider,
+    })))
+}
+
+pub async fn handle_delete_mod(
+    State(store): State<ServerStore>,
+    Extension(user): Extension<User>,
+    Path((id, name)): Path<(String, String)>,
+) -> Result<impl IntoResponse, ApiError> {
+    if !user.has_permission("servers.files") && !user.has_permission("servers.manage") {
+        return Err(ApiError::forbidden("missing permission"));
+    }
+    let srv = store.get(&id)?;
+    let kind = mods_folder_for_type(&srv.server_type);
+    let dir = store.server_dir(&id).join(kind);
+    let safe = sanitize_jar_filename(&name)?;
+    for candidate in [
+        safe.clone(),
+        format!("{safe}.jar"),
+        format!("{safe}.jar.disabled"),
+    ] {
+        let p = dir.join(&candidate);
+        if p.is_file() {
+            let _ = std::fs::remove_file(p);
+        }
+    }
+    Ok(Json(serde_json::json!({ "ok": true })))
 }
