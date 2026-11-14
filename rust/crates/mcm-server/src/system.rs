@@ -53,11 +53,12 @@ pub async fn handle_system_capacity(
 
 pub async fn handle_java_versions() -> impl IntoResponse {
     Json(serde_json::json!([
-        { "version": 8, "is_lts": true, "name": "Java 8 (LTS)" },
-        { "version": 11, "is_lts": true, "name": "Java 11 (LTS)" },
+        { "version": 25, "is_lts": true, "name": "Java 25 (LTS)" },
+        { "version": 24, "is_lts": false, "name": "Java 24" },
+        { "version": 21, "is_lts": true, "name": "Java 21 (LTS - Recommended)" },
         { "version": 17, "is_lts": true, "name": "Java 17 (LTS)" },
-        { "version": 21, "is_lts": true, "name": "Java 21 (LTS)" },
-        { "version": 22, "is_lts": false, "name": "Java 22" }
+        { "version": 11, "is_lts": true, "name": "Java 11 (LTS)" },
+        { "version": 8, "is_lts": true, "name": "Java 8 (LTS)" }
     ]))
 }
 
