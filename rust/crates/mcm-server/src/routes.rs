@@ -246,6 +246,10 @@ pub fn build_router(state: AppState) -> Router {
             get(|| async { axum::Json(serde_json::json!({ "configured": false, "enabled": false })) }),
         )
         .route(
+            "/api/curseforge/settings",
+            get(|| async { axum::Json(serde_json::json!({ "configured": false, "source": "" })) }),
+        )
+        .route(
             "/api/servers/{id}/install",
             get(|Path(id): Path<String>| async move {
                 axum::Json(serde_json::json!({

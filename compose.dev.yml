@@ -1,0 +1,28 @@
+services:
+  mcm-dev:
+    build:
+      context: .
+      dockerfile: deploy/dev.Dockerfile
+    ports:
+      - "8080:8080"
+      - "25565:25565"
+    volumes:
+      - .:/workspace
+      - mcm-dev-cargo:/usr/local/cargo/registry
+      - mcm-dev-target:/workspace/rust/target-dev
+      - mcm-dev-data:/var/lib/mcm
+    environment:
+      CARGO_TARGET_DIR: /workspace/rust/target-dev
+      MCM_ADDR: ":8080"
+      MCM_DATA_DIR: /var/lib/mcm
+      MCM_BACKUP_DIR: /var/lib/mcm/backups
+      MCM_DB_PATH: /var/lib/mcm/mcm.db
+      MCM_PORT_RANGE: "25565-25665"
+      MCM_HTTP_ONLY: "true"
+      MCM_SESSION_SECRET: "dev-session-secret-change-in-prod"
+    command: cargo run -p mcm-server
+
+volumes:
+  mcm-dev-cargo:
+  mcm-dev-target:
+  mcm-dev-data:
