@@ -182,9 +182,10 @@ impl ServerStore {
                 id.clone(),
                 format!("Downloading {server_type} {}...", input.version),
             ));
-            download_server_jar(&self.http, &server_type, &input.version, &dir)
-                .await
-                .map_err(|e| ApiError::internal(format!("download jar: {e}")))?;
+            if let Err(e) = download_server_jar(&self.http, &server_type, &input.version, &dir).await {
+                let _ = std::fs::remove_dir_all(&dir);
+                return Err(ApiError::internal(format!("download jar: {e}")));
+            }
         }
 
         {

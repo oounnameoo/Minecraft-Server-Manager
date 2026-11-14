@@ -59,6 +59,9 @@ impl ApiError {
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
+        if self.status.is_server_error() {
+            eprintln!("[ApiError {}] {}", self.status, self.message);
+        }
         let body = ErrorEnvelope {
             error: ErrorBody {
                 code: self.code,

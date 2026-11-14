@@ -124,10 +124,14 @@ impl NativeRuntime {
                 .arg(format!("-Xmx{}M", opts.ram_mb))
                 .arg("-XX:+UseG1GC")
                 .arg("-XX:+ParallelRefProcEnabled")
-                .arg("-XX:MaxGCPauseMillis=200")
-                .arg("-jar")
-                .arg("server.jar")
-                .arg("nogui");
+                .arg("-XX:MaxGCPauseMillis=200");
+            if opts.server_dir.join("server.jar").is_file() {
+                c.arg("-jar").arg("server.jar").arg("nogui");
+            } else if let Some(unix_args) = find_unix_args(&opts.server_dir) {
+                c.arg(format!("@{unix_args}")).arg("nogui");
+            } else {
+                c.arg("-jar").arg("server.jar").arg("nogui");
+            }
             c
         };
 
@@ -320,4 +324,27 @@ fn push_log(logs: &Arc<Mutex<VecDeque<String>>>, tx: &broadcast::Sender<String>,
         guard.push_back(line.clone());
     }
     let _ = tx.send(line);
+}
+
+fn find_unix_args(server_dir: &Path) -> Option<String> {
+    let lib_dir = server_dir.join("libraries");
+    if !lib_dir.is_dir() {
+        return None;
+    }
+    let mut stack = vec![lib_dir];
+    while let Some(dir) = stack.pop() {
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                } else if path.file_name().and_then(|n| n.to_str()) == Some("unix_args.txt")
+                    && let Ok(rel) = path.strip_prefix(server_dir)
+                {
+                    return Some(rel.to_string_lossy().to_string());
+                }
+            }
+        }
+    }
+    None
 }
