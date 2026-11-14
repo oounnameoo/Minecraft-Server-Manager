@@ -219,10 +219,15 @@ pub fn build_router(state: AppState) -> Router {
             get(|| async {
                 let info = mcm_core::buildinfo::current();
                 axum::Json(serde_json::json!({
-                    "available": false,
-                    "current_commit": info.commit,
+                    "build": {
+                        "commit": info.commit,
+                        "built_at": info.built_at,
+                        "dirty": info.dirty,
+                    },
+                    "supported": false,
+                    "reason": "Panel updates are managed via apt or systemd.",
                     "latest_commit": info.commit,
-                    "dirty": info.dirty,
+                    "available": false,
                 }))
             }),
         )
