@@ -1,0 +1,143 @@
+name: Build Installer & Debian OS
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      build_iso:
+        description: 'Build bootable Debian 12 Linux ISO (amd64)'
+        required: false
+        default: 'true'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+
+permissions:
+  contents: write
+
+jobs:
+  build-deb:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: '11'
+
+      - name: Build frontend
+        run: |
+          pnpm --dir web install --frozen-lockfile
+          pnpm --dir web build
+
+      - name: Build Debian .deb package (${{ matrix.arch }})
+        run: |
+          ./deploy/build-deb.sh --arch ${{ matrix.arch }}
+          dpkg -I dist/mcm_*_${{ matrix.arch }}.deb
+
+      - name: Upload .deb artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mcm-deb-${{ matrix.arch }}
+          path: dist/mcm_*_${{ matrix.arch }}.deb
+
+  build-debian-iso:
+    if: github.event_name == 'workflow_dispatch' && inputs.build_iso == 'true' || startsWith(github.ref, 'refs/tags/v')
+    needs: build-deb
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: mcm-deb-amd64
+          path: dist
+
+      - name: Install live-build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq live-build debootstrap xorriso isolinux syslinux-common
+
+      - name: Build bootable Debian 12 + MCM ISO (amd64)
+        run: |
+          WORK_DIR="$(mktemp -d)"
+          cd "$WORK_DIR"
+          sudo lb config \
+            --distribution bookworm \
+            --architecture amd64 \
+            --binary-images iso-hybrid \
+            --archive-areas "main contrib non-free-firmware" \
+            --bootappend-live "boot=live components hostname=mcm-server quiet" \
+            --debian-installer live
+          sudo mkdir -p config/package-lists config/packages.chroot config/hooks/live
+          cat <<'EOF' | sudo tee config/package-lists/mcm.list.chroot >/dev/null
+          systemd-sysv
+          network-manager
+          openssh-server
+          ufw
+          curl
+          ca-certificates
+          openssl
+          openjdk-21-jre-headless
+          sudo
+          EOF
+          sudo cp "${{ github.workspace }}"/dist/mcm_*_amd64.deb config/packages.chroot/
+          cat <<'EOF' | sudo tee config/hooks/live/99-mcm-appliance.hook.chroot >/dev/null
+          #!/bin/sh
+          set -e
+          systemctl enable mcm.service || true
+          systemctl enable ssh || true
+          if command -v ufw >/dev/null 2>&1; then
+            ufw allow 22/tcp || true
+            ufw allow 8080/tcp || true
+            ufw allow 25565:25665/tcp || true
+            ufw allow 25565:25665/udp || true
+          fi
+          EOF
+          sudo chmod 755 config/hooks/live/99-mcm-appliance.hook.chroot
+          sudo lb build
+          sudo mv -f "$WORK_DIR"/*.iso "${{ github.workspace }}/dist/mcm-os-debian-12-amd64.iso"
+
+      - name: Upload Debian ISO artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mcm-os-debian-12-amd64-iso
+          path: dist/mcm-os-debian-12-amd64.iso
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build-deb, build-debian-iso]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: release-assets/*
