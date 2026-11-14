@@ -16,7 +16,9 @@ pub struct FileEntry {
     pub name: String,
     pub path: String,
     pub is_dir: bool,
+    pub is_directory: bool,
     pub size: u64,
+    pub size_bytes: u64,
     pub modified_at: String,
 }
 
@@ -67,11 +69,15 @@ pub async fn handle_list_files(
             .and_then(|m| m.modified().ok())
             .map(|t| chrono::DateTime::<chrono::Utc>::from(t).to_rfc3339())
             .unwrap_or_default();
+        let is_dir = meta.as_ref().map(|m| m.is_dir()).unwrap_or(false);
+        let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
         entries.push(FileEntry {
             name,
             path: rel_path,
-            is_dir: meta.as_ref().map(|m| m.is_dir()).unwrap_or(false),
-            size: meta.as_ref().map(|m| m.len()).unwrap_or(0),
+            is_dir,
+            is_directory: is_dir,
+            size,
+            size_bytes: size,
             modified_at,
         });
     }
