@@ -119,7 +119,7 @@ export function CreateServerDialog({
   const [loadingVersions, setLoadingVersions] = useState(false);
   const [loadingBuilds, setLoadingBuilds] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [busy] = useState(false);
+  const [busy, setBusy] = useState(false);
 
   // Port pool state
   const [port, setPort] = useState<string>('');
