@@ -2,7 +2,9 @@ use crate::{
     assets, auth, backups, files, players, properties, schedules, servers, system, worlds,
 };
 use axum::{
-    Router, middleware,
+    Router,
+    extract::Path,
+    middleware,
     routing::{delete, get, post, put},
 };
 
@@ -38,6 +40,15 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/auth/logout", post(auth::handle_logout))
         .route("/api/auth/me", get(auth::handle_me))
         .route("/api/auth/permissions", get(auth::handle_permissions))
+        .route("/api/permissions", get(auth::handle_permissions))
+        .route(
+            "/api/auth/totp",
+            get(|| async { axum::Json(serde_json::json!({ "enabled": false })) }),
+        )
+        .route(
+            "/api/passkey",
+            get(|| async { axum::Json(serde_json::json!({ "passkeys": [] })) }),
+        )
         // Users
         .route(
             "/api/users",
@@ -198,6 +209,75 @@ pub fn build_router(state: AppState) -> Router {
             get(system::handle_get_settings).put(put(|| async {
                 axum::Json(serde_json::json!({ "ok": true }))
             })),
+        )
+        .route(
+            "/api/updates",
+            get(|| async { axum::Json(serde_json::json!({ "enabled": false, "servers": {} })) }),
+        )
+        .route(
+            "/api/panel/update",
+            get(|| async {
+                let info = mcm_core::buildinfo::current();
+                axum::Json(serde_json::json!({
+                    "available": false,
+                    "current_commit": info.commit,
+                    "latest_commit": info.commit,
+                    "dirty": info.dirty,
+                }))
+            }),
+        )
+        .route(
+            "/api/notifications/discord",
+            get(|| async {
+                axum::Json(serde_json::json!({
+                    "enabled": false,
+                    "configured": false,
+                    "events": []
+                }))
+            }),
+        )
+        .route(
+            "/api/dns",
+            get(|| async { axum::Json(serde_json::json!({ "configured": false, "enabled": false })) }),
+        )
+        .route(
+            "/api/servers/{id}/install",
+            get(|Path(id): Path<String>| async move {
+                axum::Json(serde_json::json!({
+                    "server_id": id,
+                    "installed": true,
+                    "version": null,
+                    "build": null
+                }))
+            }),
+        )
+        .route(
+            "/api/servers/{id}/tasks/progress",
+            get(|| async { axum::Json(serde_json::json!({ "active": false })) }),
+        )
+        .route(
+            "/api/servers/{id}/backups/progress",
+            get(|| async { axum::Json(serde_json::json!({ "active": false })) }),
+        )
+        .route(
+            "/api/servers/{id}/backups/trash",
+            get(|| async { axum::Json(serde_json::json!({ "backups": [] })) }),
+        )
+        .route(
+            "/api/servers/{id}/backups/retention",
+            get(|| async { axum::Json(serde_json::json!({ "keep_last": 10, "max_age_days": 30 })) }),
+        )
+        .route(
+            "/api/servers/{id}/performance",
+            get(|| async { axum::Json(serde_json::json!({ "collection_mode": "off", "points": [] })) }),
+        )
+        .route(
+            "/api/servers/{id}/performance/settings",
+            get(|| async { axum::Json(serde_json::json!({ "collection_mode": "off" })) }),
+        )
+        .route(
+            "/api/servers/{id}/dns",
+            get(|| async { axum::Json(serde_json::json!({ "enabled": false })) }),
         )
         // Middleware & SPA fallback
         .layer(middleware::from_fn_with_state(

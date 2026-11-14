@@ -12,12 +12,19 @@ struct WebAssets;
 pub async fn spa_handler(uri: Uri) -> Response {
     let path = uri.path().trim_start_matches('/');
     if path == "api" || path.starts_with("api/") {
+        let api_path = uri.path();
+        eprintln!("404 API endpoint not found: {api_path}");
+        let body = serde_json::json!({
+            "error": {
+                "code": "not_found",
+                "message": format!("API endpoint not found: {api_path}"),
+            }
+        })
+        .to_string();
         return Response::builder()
             .status(StatusCode::NOT_FOUND)
             .header(header::CONTENT_TYPE, "application/json")
-            .body(Body::from(
-                r#"{"error":{"code":"not_found","message":"API endpoint not found"}}"#,
-            ))
+            .body(Body::from(body))
             .unwrap_or_else(|_| StatusCode::NOT_FOUND.into_response());
     }
     if !path.is_empty()
