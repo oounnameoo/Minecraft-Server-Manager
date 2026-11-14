@@ -194,6 +194,9 @@ export const api = {
   createServer: (input: CreateServerInput) =>
     request<Server>('/api/servers', { method: 'POST', body: JSON.stringify(input) }),
 
+  createProgress: (progressId: string) =>
+    request<{ progress: CreateProgress | null }>(`/api/servers/create-progress/${encodeURIComponent(progressId)}`),
+
   importServer: (file: File, settings: ImportServerInput, onProgress?: (loaded: number, total: number) => void) =>
     uploadWithProgress<Server>('/api/servers/import', [['file', file], ['settings', JSON.stringify(settings)]], onProgress),
 
@@ -929,6 +932,18 @@ export interface ImportServerInput {
   no_host_port?: boolean;
 }
 
+export interface CreateProgress {
+  stage_index: number;
+  stage_total: number;
+  stage_title: string;
+  detail: string;
+  percent: number | null;
+  loaded_bytes: number;
+  total_bytes: number;
+  done: boolean;
+  error: string | null;
+}
+
 export interface CreateServerInput {
   name: string;
   server_type: ServerType;
@@ -941,6 +956,7 @@ export interface CreateServerInput {
   extra_ports?: ExtraPort[];
   auto_start?: boolean;
   start_command?: string;
+  progress_id?: string;
 }
 
 export interface UpdateServerInput {

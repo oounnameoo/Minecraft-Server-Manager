@@ -135,10 +135,10 @@ export function CreateServerDialog({
   const [inspectingModpack, setInspectingModpack] = useState(false);
   const [inspectProgress, setInspectProgress] = useState<number | null>(null);
   const [inspectStats, setInspectStats] = useState<{ loaded: number; total: number } | null>(null);
-  const [createProgress] = useState<number | null>(null);
-  const [createProgressStats] = useState<{ loaded: number; total: number } | null>(null);
-  const [createStageInfo] = useState<{ index: number; total: number; title?: string } | null>(null);
-  const [createStageDetail] = useState<string>('');
+  const [createProgress, setCreateProgress] = useState<number | null>(null);
+  const [createProgressStats, setCreateProgressStats] = useState<{ loaded: number; total: number } | null>(null);
+  const [createStageInfo, setCreateStageInfo] = useState<{ index: number; total: number; title?: string } | null>(null);
+  const [createStageDetail, setCreateStageDetail] = useState<string>('');
 
   // Modpack search state
   const [searchSource, setSearchSource] = useState<'modrinth' | 'curseforge'>('modrinth');
@@ -540,6 +540,11 @@ export function CreateServerDialog({
     const currentSelectedPack = selectedPack;
     const currentModpackFile = modpackFile;
 
+    const progressId =
+      typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+        ? crypto.randomUUID()
+        : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
     const input: CreateServerInput = {
       name: name.trim(),
       server_type: serverType,
@@ -549,10 +554,40 @@ export function CreateServerDialog({
       java_version: javaVersion,
       host_port: behindProxy ? 0 : (parsedPort > 0 ? parsedPort : undefined),
       no_host_port: behindProxy,
+      progress_id: progressId,
     };
 
     setBusy(true);
     setError(null);
+    setCreateProgress(null);
+    setCreateProgressStats(null);
+    setCreateStageInfo({ index: 1, total: 2, title: `Preparing ${serverType} ${input.version}...` });
+    setCreateStageDetail('');
+
+    let polling = true;
+    const pollTimer = window.setInterval(() => {
+      if (!polling) return;
+      void api.createProgress(progressId).then(({ progress }) => {
+        if (!polling || !progress) return;
+        setCreateStageInfo({
+          index: progress.stage_index,
+          total: progress.stage_total,
+          title: progress.stage_title,
+        });
+        setCreateStageDetail(progress.detail || '');
+        setCreateProgress(progress.percent);
+        if (progress.total_bytes > 0 || progress.loaded_bytes > 0) {
+          setCreateProgressStats({
+            loaded: progress.loaded_bytes,
+            total: progress.total_bytes,
+          });
+        } else {
+          setCreateProgressStats(null);
+        }
+      }).catch(() => {
+        // Ignore transient poll errors while creation is in flight.
+      });
+    }, 350);
 
     let createdServerId: string | null = null;
     try {
@@ -595,7 +630,13 @@ export function CreateServerDialog({
         onError(msg);
       }
     } finally {
+      polling = false;
+      window.clearInterval(pollTimer);
       setBusy(false);
+      setCreateProgress(null);
+      setCreateProgressStats(null);
+      setCreateStageInfo(null);
+      setCreateStageDetail('');
     }
   }
 

@@ -61,6 +61,10 @@ pub fn build_router(state: AppState) -> Router {
             get(servers::handle_list_servers).post(servers::handle_create_server),
         )
         .route(
+            "/api/servers/create-progress/{id}",
+            get(servers::handle_create_progress),
+        )
+        .route(
             "/api/servers/{id}",
             get(servers::handle_get_server)
                 .patch(servers::handle_update_server)

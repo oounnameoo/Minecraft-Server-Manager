@@ -1,6 +1,6 @@
 use crate::auth::User;
 use crate::error::ApiError;
-use crate::jars::download_server_jar;
+use crate::jars::{JarProgressFn, download_server_jar};
 use crate::ports::allocate_port;
 use crate::runtime::{NativeRuntime, StartOpts};
 use axum::{
@@ -19,6 +19,7 @@ use chrono::Utc;
 use mcm_core::config::Config;
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tokio::sync::broadcast;
@@ -69,6 +70,21 @@ pub struct CreateServerInput {
     #[serde(default)]
     #[allow(dead_code)]
     pub jvm_flags: String,
+    #[serde(default)]
+    pub progress_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CreateProgress {
+    pub stage_index: u32,
+    pub stage_total: u32,
+    pub stage_title: String,
+    pub detail: String,
+    pub percent: Option<f64>,
+    pub loaded_bytes: u64,
+    pub total_bytes: u64,
+    pub done: bool,
+    pub error: Option<String>,
 }
 
 fn default_java_version() -> i64 {
@@ -97,6 +113,7 @@ pub struct ServerStore {
     pub runtime: NativeRuntime,
     pub http: reqwest::Client,
     pub install_tx: broadcast::Sender<(String, String)>,
+    pub create_progress: Arc<Mutex<HashMap<String, CreateProgress>>>,
 }
 
 impl ServerStore {
@@ -108,6 +125,19 @@ impl ServerStore {
             runtime,
             http: reqwest::Client::new(),
             install_tx,
+            create_progress: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    pub fn set_create_progress(&self, progress_id: Option<&str>, progress: CreateProgress) {
+        if let Some(pid) = progress_id
+            && !pid.is_empty()
+            && let Ok(mut map) = self.create_progress.lock()
+        {
+            if map.len() > 64 {
+                map.retain(|_, v| !v.done && v.error.is_none());
+            }
+            map.insert(pid.to_string(), progress);
         }
     }
 
@@ -186,6 +216,22 @@ impl ServerStore {
             }
         }
         let mut cleanup = DirCleanup(&dir, false);
+        let progress_id = input.progress_id.as_deref();
+        let stage_total = if server_type == "custom" { 1 } else { 2 };
+        self.set_create_progress(
+            progress_id,
+            CreateProgress {
+                stage_index: 1,
+                stage_total,
+                stage_title: format!("Preparing {server_type} {}...", input.version),
+                detail: String::new(),
+                percent: None,
+                loaded_bytes: 0,
+                total_bytes: 0,
+                done: false,
+                error: None,
+            },
+        );
         eprintln!(
             "[create] starting id={} name={:?} type={} version={} ram_mb={} port={} java={}",
             id, name, server_type, input.version, input.ram_mb, host_port, input.java_version
@@ -197,13 +243,70 @@ impl ServerStore {
                 id.clone(),
                 format!("Downloading {server_type} {}...", input.version),
             ));
-            if let Err(e) = download_server_jar(&self.http, &server_type, &input.version, &dir).await {
+            let progress_cb: Option<JarProgressFn> = progress_id.map(|pid| {
+                let store = self.clone();
+                let pid_owned = pid.to_string();
+                Arc::new(move |loaded: u64, total: u64, stage: &str| {
+                    let pct = if total > 0 {
+                        Some(((loaded as f64 / total as f64) * 100.0).min(100.0))
+                    } else {
+                        None
+                    };
+                    store.set_create_progress(
+                        Some(&pid_owned),
+                        CreateProgress {
+                            stage_index: 1,
+                            stage_total,
+                            stage_title: stage.to_string(),
+                            detail: String::new(),
+                            percent: pct,
+                            loaded_bytes: loaded,
+                            total_bytes: total,
+                            done: false,
+                            error: None,
+                        },
+                    );
+                }) as JarProgressFn
+            });
+            if let Err(e) =
+                download_server_jar(&self.http, &server_type, &input.version, &dir, progress_cb)
+                    .await
+            {
                 eprintln!("[create] download_server_jar failed id={}: {e}", id);
+                self.set_create_progress(
+                    progress_id,
+                    CreateProgress {
+                        stage_index: 1,
+                        stage_total,
+                        stage_title: "Download failed".to_string(),
+                        detail: e.to_string(),
+                        percent: None,
+                        loaded_bytes: 0,
+                        total_bytes: 0,
+                        done: true,
+                        error: Some(format!("download jar: {e}")),
+                    },
+                );
                 let _ = std::fs::remove_dir_all(&dir);
                 cleanup.1 = true;
                 return Err(ApiError::internal(format!("download jar: {e}")));
             }
         }
+
+        self.set_create_progress(
+            progress_id,
+            CreateProgress {
+                stage_index: stage_total,
+                stage_total,
+                stage_title: "Finalizing server configuration...".to_string(),
+                detail: String::new(),
+                percent: Some(100.0),
+                loaded_bytes: 0,
+                total_bytes: 0,
+                done: false,
+                error: None,
+            },
+        );
 
         {
             let conn = self.db.lock().unwrap();
@@ -231,6 +334,20 @@ impl ServerStore {
         }
 
         cleanup.1 = true;
+        self.set_create_progress(
+            progress_id,
+            CreateProgress {
+                stage_index: stage_total,
+                stage_total,
+                stage_title: "Server created".to_string(),
+                detail: String::new(),
+                percent: Some(100.0),
+                loaded_bytes: 0,
+                total_bytes: 0,
+                done: true,
+                error: None,
+            },
+        );
         eprintln!("[create] completed id={}", id);
         self.get(&id)
     }
@@ -466,6 +583,22 @@ pub async fn handle_create_server(
     }
     let srv = store.create(input).await?;
     Ok((StatusCode::CREATED, Json(srv)))
+}
+
+pub async fn handle_create_progress(
+    State(store): State<ServerStore>,
+    Extension(user): Extension<User>,
+    Path(progress_id): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    if !user.has_permission("servers.create") && !user.has_permission("servers.view") {
+        return Err(ApiError::forbidden("missing permission"));
+    }
+    let progress = store
+        .create_progress
+        .lock()
+        .ok()
+        .and_then(|map| map.get(&progress_id).cloned());
+    Ok(Json(serde_json::json!({ "progress": progress })))
 }
 
 pub async fn handle_get_server(

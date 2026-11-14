@@ -1,12 +1,17 @@
 use anyhow::{Context, Result, anyhow};
 use serde_json::Value;
 use std::path::Path;
+use std::sync::Arc;
+use tokio::io::AsyncWriteExt;
+
+pub type JarProgressFn = Arc<dyn Fn(u64, u64, &str) + Send + Sync>;
 
 pub async fn download_server_jar(
     client: &reqwest::Client,
     software: &str,
     version: &str,
     dest_dir: &Path,
+    progress: Option<JarProgressFn>,
 ) -> Result<String> {
     let sw = software.trim().to_lowercase();
     if sw == "custom" {
@@ -15,16 +20,21 @@ pub async fn download_server_jar(
 
     std::fs::create_dir_all(dest_dir).context("create server directory")?;
     if sw == "forge" {
-        return install_forge_server(client, version, dest_dir).await;
+        return install_forge_server(client, version, dest_dir, progress).await;
     }
     if sw == "neoforge" {
-        return install_neoforge_server(client, version, dest_dir).await;
+        return install_neoforge_server(client, version, dest_dir, progress).await;
     }
     if sw == "quilt" {
-        return install_quilt_server(client, version, dest_dir).await;
+        return install_quilt_server(client, version, dest_dir, progress).await;
     }
     let jar_name = "server.jar".to_string();
     let dest_path = dest_dir.join(&jar_name);
+
+    let stage = format!("Resolving {sw} {version}...");
+    if let Some(cb) = &progress {
+        cb(0, 0, &stage);
+    }
 
     let url = match sw.as_str() {
         "paper" | "velocity" | "waterfall" => resolve_papermc_url(client, &sw, version).await?,
@@ -34,23 +44,10 @@ pub async fn download_server_jar(
         other => return Err(anyhow!("unsupported server software: {other}")),
     };
 
-    let resp = client
-        .get(&url)
-        .header("User-Agent", "mcm/0.1.0")
-        .send()
+    let dl_stage = format!("Downloading {sw} {version}...");
+    download_to_file_with_progress(client, &url, &dest_path, &dl_stage, progress)
         .await
         .with_context(|| format!("download {sw} {version} from {url}"))?;
-    if !resp.status().is_success() {
-        return Err(anyhow!(
-            "upstream download failed ({}): {}",
-            resp.status(),
-            url
-        ));
-    }
-    let bytes = resp.bytes().await?;
-    tokio::fs::write(&dest_path, &bytes)
-        .await
-        .context("write server.jar")?;
 
     Ok(jar_name)
 }
@@ -510,8 +507,14 @@ async fn run_java_installer(dest_dir: &Path, installer_name: &str, args: &[&str]
     Ok(())
 }
 
-async fn download_to_file(client: &reqwest::Client, url: &str, dest: &Path) -> Result<()> {
-    let resp = client
+async fn download_to_file_with_progress(
+    client: &reqwest::Client,
+    url: &str,
+    dest: &Path,
+    stage: &str,
+    progress: Option<JarProgressFn>,
+) -> Result<()> {
+    let mut resp = client
         .get(url)
         .header("User-Agent", "mcm/0.1.0")
         .send()
@@ -520,8 +523,29 @@ async fn download_to_file(client: &reqwest::Client, url: &str, dest: &Path) -> R
     if !resp.status().is_success() {
         return Err(anyhow!("upstream download failed ({}): {}", resp.status(), url));
     }
-    let bytes = resp.bytes().await?;
-    tokio::fs::write(dest, &bytes).await?;
+    let total = resp.content_length().unwrap_or(0);
+    if let Some(cb) = &progress {
+        cb(0, total, stage);
+    }
+    let mut file = tokio::fs::File::create(dest)
+        .await
+        .context("create destination file")?;
+    let mut loaded: u64 = 0;
+    let mut last_report: u64 = 0;
+    while let Some(chunk) = resp.chunk().await? {
+        file.write_all(&chunk).await?;
+        loaded += chunk.len() as u64;
+        if loaded - last_report >= 131_072 {
+            last_report = loaded;
+            if let Some(cb) = &progress {
+                cb(loaded, total, stage);
+            }
+        }
+    }
+    file.flush().await?;
+    if let Some(cb) = &progress {
+        cb(loaded, total.max(loaded), stage);
+    }
     Ok(())
 }
 
@@ -529,7 +553,11 @@ async fn install_forge_server(
     client: &reqwest::Client,
     version: &str,
     dest_dir: &Path,
+    progress: Option<JarProgressFn>,
 ) -> Result<String> {
+    if let Some(cb) = &progress {
+        cb(0, 0, &format!("Resolving Forge {version}..."));
+    }
     let val: Value = client
         .get("https://files.minecraftforge.net/net/minecraftforge/forge/promotions_slim.json")
         .header("User-Agent", "mcm/0.1.0")
@@ -552,7 +580,17 @@ async fn install_forge_server(
         "https://maven.minecraftforge.net/net/minecraftforge/forge/{version}-{forge_ver}/forge-{version}-{forge_ver}-installer.jar"
     );
     let installer_path = dest_dir.join("forge-installer.jar");
-    download_to_file(client, &url, &installer_path).await?;
+    download_to_file_with_progress(
+        client,
+        &url,
+        &installer_path,
+        &format!("Downloading Forge {version}-{forge_ver} installer..."),
+        progress.clone(),
+    )
+    .await?;
+    if let Some(cb) = &progress {
+        cb(0, 0, "Running Forge server installer...");
+    }
     run_java_installer(dest_dir, "forge-installer.jar", &["--installServer"]).await?;
     let _ = std::fs::remove_file(&installer_path);
     let _ = std::fs::remove_file(dest_dir.join("forge-installer.jar.log"));
@@ -574,7 +612,11 @@ async fn install_neoforge_server(
     client: &reqwest::Client,
     version: &str,
     dest_dir: &Path,
+    progress: Option<JarProgressFn>,
 ) -> Result<String> {
+    if let Some(cb) = &progress {
+        cb(0, 0, &format!("Resolving NeoForge {version}..."));
+    }
     let xml = client
         .get("https://maven.neoforged.net/releases/net/neoforged/neoforge/maven-metadata.xml")
         .header("User-Agent", "mcm/0.1.0")
@@ -598,7 +640,17 @@ async fn install_neoforge_server(
         "https://maven.neoforged.net/releases/net/neoforged/neoforge/{nf_ver}/neoforge-{nf_ver}-installer.jar"
     );
     let installer_path = dest_dir.join("neoforge-installer.jar");
-    download_to_file(client, &url, &installer_path).await?;
+    download_to_file_with_progress(
+        client,
+        &url,
+        &installer_path,
+        &format!("Downloading NeoForge {nf_ver} installer..."),
+        progress.clone(),
+    )
+    .await?;
+    if let Some(cb) = &progress {
+        cb(0, 0, "Running NeoForge server installer...");
+    }
     run_java_installer(dest_dir, "neoforge-installer.jar", &["--installServer"]).await?;
     let _ = std::fs::remove_file(&installer_path);
     let _ = std::fs::remove_file(dest_dir.join("neoforge-installer.jar.log"));
@@ -609,7 +661,11 @@ async fn install_quilt_server(
     client: &reqwest::Client,
     version: &str,
     dest_dir: &Path,
+    progress: Option<JarProgressFn>,
 ) -> Result<String> {
+    if let Some(cb) = &progress {
+        cb(0, 0, &format!("Resolving Quilt {version}..."));
+    }
     let installers: Value = client
         .get("https://meta.quiltmc.org/v3/versions/installer")
         .header("User-Agent", "mcm/0.1.0")
@@ -625,7 +681,17 @@ async fn install_quilt_server(
         .and_then(|u| u.as_str())
         .ok_or_else(|| anyhow!("no quilt installer found"))?;
     let installer_path = dest_dir.join("quilt-installer.jar");
-    download_to_file(client, url, &installer_path).await?;
+    download_to_file_with_progress(
+        client,
+        url,
+        &installer_path,
+        "Downloading Quilt installer...",
+        progress.clone(),
+    )
+    .await?;
+    if let Some(cb) = &progress {
+        cb(0, 0, "Running Quilt server installer...");
+    }
     run_java_installer(
         dest_dir,
         "quilt-installer.jar",
