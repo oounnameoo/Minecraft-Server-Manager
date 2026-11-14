@@ -551,53 +551,52 @@ export function CreateServerDialog({
       no_host_port: behindProxy,
     };
 
-    // Close modal immediately when user clicks submit
-    setOpen(false);
+    setBusy(true);
     setError(null);
-    setName('');
-    setModpackFile(null);
-    setModpackManifest(null);
-    setSelectedPack(null);
 
-    // Execute server creation and any modpack install in the background
-    void (async () => {
-      let createdServerId: string | null = null;
-      try {
-        const srv = await api.createServer(input);
-        createdServerId = srv.id;
+    let createdServerId: string | null = null;
+    try {
+      const srv = await api.createServer(input);
+      createdServerId = srv.id;
+      onCreated();
+
+      if (currentCreateMode === 'search-modpack' && currentSelectedPack) {
+        await api.installModpackRemote(srv.id, {
+          source: currentSelectedPack.source,
+          url: currentSelectedPack.downloadUrl,
+          project_id: currentSelectedPack.project_id,
+          project_slug: currentSelectedPack.project_slug,
+          version_id: currentSelectedPack.selectedVersion,
+          auto_configure_server: true,
+          created_with_modpack: true,
+        });
         onCreated();
+      } else if (currentCreateMode === 'modpack' && currentModpackFile) {
+        await api.installModpackFile(srv.id, currentModpackFile, true, true);
+        onCreated();
+      }
 
-        if (currentCreateMode === 'search-modpack' && currentSelectedPack) {
-          await api.installModpackRemote(srv.id, {
-            source: currentSelectedPack.source,
-            url: currentSelectedPack.downloadUrl,
-            project_id: currentSelectedPack.project_id,
-            project_slug: currentSelectedPack.project_slug,
-            version_id: currentSelectedPack.selectedVersion,
-            auto_configure_server: true,
-            created_with_modpack: true,
-          });
-          onCreated();
-        } else if (currentCreateMode === 'modpack' && currentModpackFile) {
-          await api.installModpackFile(srv.id, currentModpackFile, true, true);
-          onCreated();
-        }
-      } catch (err) {
-        if (createdServerId && (currentCreateMode === 'search-modpack' || currentCreateMode === 'modpack')) {
-          try {
-            await api.deleteServer(createdServerId);
-          } catch {
-            // ignore cleanup error
-          }
-        }
-        const msg = err instanceof ApiError ? err.detail : (err instanceof Error ? err.message : 'Failed to create server');
-        if (onError) {
-          onError(msg);
-        } else {
-          console.error('Failed to create server:', msg);
+      setOpen(false);
+      setName('');
+      setModpackFile(null);
+      setModpackManifest(null);
+      setSelectedPack(null);
+    } catch (err) {
+      if (createdServerId && (currentCreateMode === 'search-modpack' || currentCreateMode === 'modpack')) {
+        try {
+          await api.deleteServer(createdServerId);
+        } catch {
+          // ignore cleanup error
         }
       }
-    })();
+      const msg = err instanceof ApiError ? err.detail : (err instanceof Error ? err.message : 'Failed to create server');
+      setError(msg);
+      if (onError) {
+        onError(msg);
+      }
+    } finally {
+      setBusy(false);
+    }
   }
 
   return (

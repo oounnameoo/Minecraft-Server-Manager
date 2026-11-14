@@ -176,6 +176,21 @@ impl ServerStore {
         let dir = self.server_dir(&id);
         std::fs::create_dir_all(&dir).map_err(|e| ApiError::internal(e.to_string()))?;
 
+        struct DirCleanup<'a>(&'a std::path::Path, bool);
+        impl Drop for DirCleanup<'_> {
+            fn drop(&mut self) {
+                if !self.1 {
+                    eprintln!("[create] aborted/dropped before completion, removing {:?}", self.0);
+                    let _ = std::fs::remove_dir_all(self.0);
+                }
+            }
+        }
+        let mut cleanup = DirCleanup(&dir, false);
+        eprintln!(
+            "[create] starting id={} name={:?} type={} version={} ram_mb={} port={} java={}",
+            id, name, server_type, input.version, input.ram_mb, host_port, input.java_version
+        );
+
         // Download server jar (non-custom)
         if server_type != "custom" {
             let _ = self.install_tx.send((
@@ -183,7 +198,9 @@ impl ServerStore {
                 format!("Downloading {server_type} {}...", input.version),
             ));
             if let Err(e) = download_server_jar(&self.http, &server_type, &input.version, &dir).await {
+                eprintln!("[create] download_server_jar failed id={}: {e}", id);
                 let _ = std::fs::remove_dir_all(&dir);
+                cleanup.1 = true;
                 return Err(ApiError::internal(format!("download jar: {e}")));
             }
         }
@@ -213,6 +230,8 @@ impl ServerStore {
             )?;
         }
 
+        cleanup.1 = true;
+        eprintln!("[create] completed id={}", id);
         self.get(&id)
     }
 
