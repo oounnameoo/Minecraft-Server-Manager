@@ -39,16 +39,115 @@ pub async fn handle_system_capacity(
     }
     let servers = store.list().unwrap_or_default();
     let allocated_ram_mb: i64 = servers.iter().map(|s| s.ram_mb).sum();
-    let running_count = servers.iter().filter(|s| s.state == "running").count();
+
+    let cpu_cores = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(0);
+    let memory_total_bytes = read_total_memory_bytes().await;
+    let (disk, disk_error) = read_disk_usage(&store.cfg.data_dir).await;
+
+    let mut active_servers: usize = 0;
+    let mut cpu_percent: f64 = 0.0;
+    let mut memory_bytes: u64 = 0;
+    let mut net_rx_bytes: u64 = 0;
+    let mut net_tx_bytes: u64 = 0;
+
+    for srv in &servers {
+        if store.runtime.is_running(&srv.id).await {
+            active_servers += 1;
+            let st = store.runtime.stats(&srv.id, srv.ram_mb).await;
+            cpu_percent += st.cpu_percent;
+            memory_bytes += (st.memory_used_mb.max(0.0) * 1024.0 * 1024.0) as u64;
+            net_rx_bytes += st.network_rx_bytes;
+            net_tx_bytes += st.network_tx_bytes;
+        }
+    }
+
     Ok(Json(serde_json::json!({
+        "runtime": "",
+        "cpu_cores": cpu_cores,
+        "memory_total_bytes": memory_total_bytes,
+        "usage": {
+            "cpu_percent": cpu_percent,
+            "memory_bytes": memory_bytes,
+            "net_rx_bytes": net_rx_bytes,
+            "net_tx_bytes": net_tx_bytes,
+            "active_servers": active_servers,
+        },
+        "disk": disk,
+        "disk_error": disk_error,
         "server_count": servers.len(),
-        "running_count": running_count,
+        "running_count": active_servers,
         "allocated_ram_mb": allocated_ram_mb,
         "port_range_start": store.cfg.port_range.start,
         "port_range_end": store.cfg.port_range.end,
         "data_dir": store.cfg.data_dir,
         "backup_dir": store.cfg.backup_dir,
     })))
+}
+
+async fn read_total_memory_bytes() -> u64 {
+    if let Ok(meminfo) = tokio::fs::read_to_string("/proc/meminfo").await {
+        for line in meminfo.lines() {
+            if let Some(rest) = line.strip_prefix("MemTotal:")
+                && let Some(kb_str) = rest.split_whitespace().next()
+                && let Ok(kb) = kb_str.parse::<u64>()
+            {
+                return kb * 1024;
+            }
+        }
+    }
+    if let Ok(out) = tokio::process::Command::new("sysctl")
+        .args(["-n", "hw.memsize"])
+        .output()
+        .await
+        && out.status.success()
+        && let Ok(bytes) = String::from_utf8_lossy(&out.stdout).trim().parse::<u64>()
+    {
+        return bytes;
+    }
+    0
+}
+
+async fn read_disk_usage(path: &std::path::Path) -> (Option<serde_json::Value>, Option<String>) {
+    let target = if path.exists() {
+        path
+    } else {
+        std::path::Path::new("/")
+    };
+    let out = match tokio::process::Command::new("df")
+        .arg("-kP")
+        .arg(target)
+        .output()
+        .await
+    {
+        Ok(o) => o,
+        Err(e) => return (None, Some(format!("df failed: {e}"))),
+    };
+    if !out.status.success() {
+        let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        return (None, Some(format!("df exited with error: {err}")));
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    let Some(line) = text.lines().nth(1) else {
+        return (None, Some("unexpected df output".to_string()));
+    };
+    let cols: Vec<&str> = line.split_whitespace().collect();
+    if cols.len() < 4 {
+        return (None, Some("unexpected df columns".to_string()));
+    }
+    let total_kb = cols[1].parse::<u64>().unwrap_or(0);
+    let used_kb = cols[2].parse::<u64>().unwrap_or(0);
+    let avail_kb = cols[3].parse::<u64>().unwrap_or(0);
+    (
+        Some(serde_json::json!({
+            "path": path,
+            "total_bytes": total_kb * 1024,
+            "used_bytes": used_kb * 1024,
+            "available_bytes": avail_kb * 1024,
+        })),
+        None,
+    )
 }
 
 pub async fn handle_java_versions() -> impl IntoResponse {
