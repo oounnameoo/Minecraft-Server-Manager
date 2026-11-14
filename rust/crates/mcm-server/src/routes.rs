@@ -251,7 +251,10 @@ pub fn build_router(state: AppState) -> Router {
                 .put(system::handle_put_curseforge_settings)
                 .delete(system::handle_delete_curseforge_settings),
         )
-        .route("/api/curseforge/{*path}", get(system::handle_curseforge_proxy))
+        .route(
+            "/api/curseforge/{*path}",
+            get(system::handle_curseforge_proxy).post(system::handle_curseforge_proxy),
+        )
         .route("/api/proxy", get(system::handle_api_proxy))
         .route("/api/servers/{id}/mods", get(system::handle_list_mods))
         .route(

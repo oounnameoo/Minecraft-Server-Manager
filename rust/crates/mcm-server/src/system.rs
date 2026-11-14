@@ -5,9 +5,9 @@ use crate::ports::{create_reservation, delete_reservation, list_reservations};
 use crate::servers::ServerStore;
 use axum::{
     Extension, Json,
-    body::Body,
+    body::{Body, Bytes},
     extract::{Path, Query, RawQuery, State},
-    http::{HeaderValue, StatusCode, header},
+    http::{HeaderValue, Method, StatusCode, header},
     response::{IntoResponse, Response},
 };
 use mcm_core::buildinfo;
@@ -423,8 +423,10 @@ pub async fn handle_api_proxy(
 
 pub async fn handle_curseforge_proxy(
     State(store): State<ServerStore>,
+    method: Method,
     Path(path): Path<String>,
     RawQuery(raw_query): RawQuery,
+    body: Bytes,
 ) -> Result<Response, ApiError> {
     let (Some(key), _) = load_curseforge_key(&store.db) else {
         return Err(ApiError::bad_request(
@@ -432,16 +434,30 @@ pub async fn handle_curseforge_proxy(
         ));
     };
     let clean_path = path.trim_start_matches('/');
-    let url = match raw_query {
-        Some(q) if !q.is_empty() => format!("https://api.curseforge.com/{clean_path}?{q}"),
-        _ => format!("https://api.curseforge.com/{clean_path}"),
+    let api_path = if clean_path.starts_with("v1/") {
+        clean_path.to_string()
+    } else {
+        format!("v1/{clean_path}")
     };
-    let req = store
+    let url = match raw_query {
+        Some(q) if !q.is_empty() => format!("https://api.curseforge.com/{api_path}?{q}"),
+        _ => format!("https://api.curseforge.com/{api_path}"),
+    };
+    let req_method = match method {
+        Method::POST => reqwest::Method::POST,
+        _ => reqwest::Method::GET,
+    };
+    let mut req = store
         .http
-        .get(&url)
+        .request(req_method, &url)
         .header("User-Agent", "mcm/0.1.0")
         .header("Accept", "application/json")
         .header("x-api-key", key);
+    if !body.is_empty() {
+        req = req
+            .header("Content-Type", "application/json")
+            .body(body);
+    }
     forward_upstream(req).await
 }
 
