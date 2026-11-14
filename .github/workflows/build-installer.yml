@@ -34,7 +34,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -49,11 +49,11 @@ jobs:
         with:
           workspaces: rust
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: '24'
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           version: '11'
 
@@ -71,7 +71,7 @@ jobs:
           dpkg -I dist/mcm_*_${{ matrix.arch }}.deb
 
       - name: Upload .deb artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: mcm-deb-${{ matrix.arch }}
           path: dist/mcm_*_${{ matrix.arch }}.deb
@@ -82,9 +82,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: mcm-deb-amd64
           path: dist
@@ -135,7 +135,7 @@ jobs:
           sudo mv -f "$WORK_DIR"/*.iso "${{ github.workspace }}/dist/mcm-os-debian-12-amd64.iso"
 
       - name: Upload Debian ISO artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: mcm-os-debian-12-amd64-iso
           path: dist/mcm-os-debian-12-amd64.iso
@@ -145,11 +145,11 @@ jobs:
     needs: [build-deb, build-debian-iso]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: release-assets
           merge-multiple: true
 
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           files: release-assets/*
