@@ -11,6 +11,15 @@ struct WebAssets;
 
 pub async fn spa_handler(uri: Uri) -> Response {
     let path = uri.path().trim_start_matches('/');
+    if path == "api" || path.starts_with("api/") {
+        return Response::builder()
+            .status(StatusCode::NOT_FOUND)
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                r#"{"error":{"code":"not_found","message":"API endpoint not found"}}"#,
+            ))
+            .unwrap_or_else(|_| StatusCode::NOT_FOUND.into_response());
+    }
     if !path.is_empty()
         && let Some(file) = WebAssets::get(path)
     {

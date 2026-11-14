@@ -5,7 +5,7 @@ use crate::ports::{create_reservation, delete_reservation, list_reservations};
 use crate::servers::ServerStore;
 use axum::{
     Extension, Json,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     response::IntoResponse,
 };
@@ -51,9 +51,13 @@ pub async fn handle_system_capacity(
 }
 
 pub async fn handle_java_versions() -> impl IntoResponse {
-    Json(serde_json::json!({
-        "versions": [8, 11, 17, 21, 22]
-    }))
+    Json(serde_json::json!([
+        { "version": 8, "is_lts": true, "name": "Java 8 (LTS)" },
+        { "version": 11, "is_lts": true, "name": "Java 11 (LTS)" },
+        { "version": 17, "is_lts": true, "name": "Java 17 (LTS)" },
+        { "version": 21, "is_lts": true, "name": "Java 21 (LTS)" },
+        { "version": 22, "is_lts": false, "name": "Java 22" }
+    ]))
 }
 
 pub async fn handle_list_software() -> impl IntoResponse {
@@ -92,6 +96,132 @@ pub async fn handle_jar_builds(
         .await
         .map_err(|e| ApiError::internal(format!("fetch builds: {e}")))?;
     Ok(Json(builds))
+}
+
+#[derive(Deserialize)]
+pub struct AvailablePortsQuery {
+    pub server_id: Option<String>,
+}
+
+pub async fn handle_available_ports(
+    State(store): State<ServerStore>,
+    Extension(user): Extension<User>,
+    Query(query): Query<AvailablePortsQuery>,
+) -> Result<impl IntoResponse, ApiError> {
+    if !user.has_permission("servers.view") {
+        return Err(ApiError::forbidden("missing permission servers.view"));
+    }
+    let servers = store.list().unwrap_or_default();
+    let reservations = list_reservations(&store.db).unwrap_or_default();
+
+    let mut used_ports = std::collections::HashSet::new();
+    let mut used_details = Vec::new();
+    for s in &servers {
+        if query.server_id.as_deref() == Some(s.id.as_str()) {
+            continue;
+        }
+        if s.host_port > 0 {
+            used_ports.insert(s.host_port);
+            used_details.push(serde_json::json!({
+                "port": s.host_port,
+                "server_id": s.id,
+                "server_name": s.name,
+                "description": "Primary game port",
+            }));
+        }
+        for ep in &s.extra_ports {
+            if let Some(ep_port) = ep.get("host_port").and_then(|v| v.as_u64()).and_then(|p| u16::try_from(p).ok())
+                && ep_port > 0
+            {
+                used_ports.insert(ep_port);
+                let desc = ep.get("description").and_then(|v| v.as_str()).unwrap_or("");
+                used_details.push(serde_json::json!({
+                    "port": ep_port,
+                    "server_id": s.id,
+                    "server_name": s.name,
+                    "description": desc,
+                }));
+            }
+        }
+    }
+    for r in &reservations {
+        if let Some(r_port) = r.get("port").and_then(|v| v.as_u64()).and_then(|p| u16::try_from(p).ok()) {
+            used_ports.insert(r_port);
+            let label = r.get("label").and_then(|v| v.as_str()).unwrap_or("");
+            used_details.push(serde_json::json!({
+                "port": r_port,
+                "server_id": "",
+                "server_name": "Reserved",
+                "description": label,
+            }));
+        }
+    }
+
+    let pool: Vec<u16> = (store.cfg.port_range.start..=store.cfg.port_range.end).collect();
+    let available: Vec<u16> = pool
+        .iter()
+        .copied()
+        .filter(|p| !used_ports.contains(p))
+        .collect();
+
+    Ok(Json(serde_json::json!({
+        "available": available,
+        "pool": pool,
+        "used": used_details,
+    })))
+}
+
+#[derive(Deserialize)]
+pub struct CheckPortQuery {
+    pub port: u16,
+    pub server_id: Option<String>,
+}
+
+pub async fn handle_check_port(
+    State(store): State<ServerStore>,
+    Extension(user): Extension<User>,
+    Query(query): Query<CheckPortQuery>,
+) -> Result<impl IntoResponse, ApiError> {
+    if !user.has_permission("servers.view") {
+        return Err(ApiError::forbidden("missing permission servers.view"));
+    }
+    let servers = store.list().unwrap_or_default();
+    for s in &servers {
+        if query.server_id.as_deref() == Some(s.id.as_str()) {
+            continue;
+        }
+        if s.host_port == query.port
+            || s.extra_ports.iter().any(|ep| {
+                ep.get("host_port")
+                    .and_then(|v| v.as_u64())
+                    .is_some_and(|p| p == u64::from(query.port))
+            })
+        {
+            return Ok(Json(serde_json::json!({
+                "port": query.port,
+                "in_use": true,
+                "message": format!("Port {} is already used by server {}", query.port, s.name),
+            })));
+        }
+    }
+    let reservations = list_reservations(&store.db).unwrap_or_default();
+    if let Some(r) = reservations.into_iter().find(|r| {
+        r.get("port")
+            .and_then(|v| v.as_u64())
+            .is_some_and(|p| p == u64::from(query.port))
+    }) {
+        let label = r.get("label").and_then(|v| v.as_str()).unwrap_or("");
+        return Ok(Json(serde_json::json!({
+            "port": query.port,
+            "in_use": true,
+            "message": format!("Port {} is reserved ({})", query.port, label),
+        })));
+    }
+    Ok(Json(serde_json::json!({
+        "port": query.port,
+        "in_use": false,
+        "message": format!("Port {} is available", query.port),
+    })))
 }
 
 pub async fn handle_list_port_reservations(
