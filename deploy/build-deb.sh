@@ -13,11 +13,13 @@ case "$ARCH" in
   aarch64) ARCH="arm64" ;;
 esac
 BIN_DIR=""
+TARGET=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --arch) ARCH="$2"; shift 2 ;;
     --bin-dir) BIN_DIR="$2"; shift 2 ;;
+    --target) TARGET="$2"; shift 2 ;;
     *) echo "Unknown option: $1" >&2; exit 1 ;;
   esac
 done
@@ -28,8 +30,13 @@ command -v dpkg-deb >/dev/null 2>&1 || {
 }
 
 if [[ -z "$BIN_DIR" ]]; then
-  (cd "$REPO_DIR/rust" && cargo build --release --workspace)
-  BIN_DIR="$REPO_DIR/rust/target/release"
+  if [[ -n "$TARGET" ]]; then
+    (cd "$REPO_DIR/rust" && cargo build --release --workspace --target "$TARGET")
+    BIN_DIR="$REPO_DIR/rust/target/$TARGET/release"
+  else
+    (cd "$REPO_DIR/rust" && cargo build --release --workspace)
+    BIN_DIR="$REPO_DIR/rust/target/release"
+  fi
 fi
 
 STAGE="$(mktemp -d)"
@@ -86,7 +93,7 @@ Version: ${VERSION}
 Section: games
 Priority: optional
 Architecture: ${ARCH}
-Depends: openjdk-21-jre-headless | default-jre-headless, adduser, openssl, ca-certificates
+Depends: openjdk-21-jre-headless | openjdk-17-jre-headless | default-jre-headless, adduser, openssl, ca-certificates
 Maintainer: MCM <noreply@example.com>
 Description: Minecraft Server Manager (native Rust panel and CLI)
  Native Linux Minecraft server management panel and Proxmox-style CLI (mcm-cli).

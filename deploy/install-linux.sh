@@ -103,7 +103,14 @@ fi
 say "Installing Java runtime and base dependencies via apt..."
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-apt-get install -y -qq ca-certificates curl openssl openjdk-21-jre-headless
+JAVA_PKG="default-jre-headless"
+for candidate in openjdk-21-jre-headless openjdk-17-jre-headless default-jre-headless; do
+  if apt-cache show "$candidate" >/dev/null 2>&1; then
+    JAVA_PKG="$candidate"
+    break
+  fi
+done
+apt-get install -y -qq ca-certificates curl openssl "$JAVA_PKG"
 
 if [[ -x "$SCRIPT_DIR/bin/mcm" && -x "$SCRIPT_DIR/bin/mcm-cli" ]]; then
   say "Installing pre-built $APP_NAME and mcm-cli binaries..."
