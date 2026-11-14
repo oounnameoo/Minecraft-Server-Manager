@@ -180,6 +180,10 @@ pub fn build_router(state: AppState) -> Router {
             get(system::handle_jar_versions),
         )
         .route(
+            "/api/jars/{software}/versions/{version}/builds",
+            get(system::handle_jar_builds),
+        )
+        .route(
             "/api/ports/reservations",
             get(system::handle_list_port_reservations).post(system::handle_create_port_reservation),
         )

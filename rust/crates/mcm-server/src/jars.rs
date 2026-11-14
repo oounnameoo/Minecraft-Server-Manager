@@ -234,6 +234,110 @@ pub async fn list_versions(client: &reqwest::Client, software: &str) -> Result<V
     }
 }
 
+#[derive(serde::Serialize)]
+pub struct JarBuildInfo {
+    pub version: String,
+    pub build: String,
+    pub display: String,
+}
+
+pub async fn list_builds(
+    client: &reqwest::Client,
+    software: &str,
+    version: &str,
+) -> Result<Vec<JarBuildInfo>> {
+    let sw = software.trim().to_lowercase();
+    match sw.as_str() {
+        "paper" | "velocity" | "waterfall" => {
+            let val: Value = client
+                .get(format!(
+                    "https://fill.papermc.io/v3/projects/{sw}/versions/{version}/builds"
+                ))
+                .header("User-Agent", "mcm/0.1.0")
+                .send()
+                .await?
+                .error_for_status()?
+                .json()
+                .await?;
+            let builds = val
+                .as_array()
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|b| {
+                            let id = b.get("id")?.as_i64()?.to_string();
+                            let channel = b.get("channel").and_then(|c| c.as_str()).unwrap_or("");
+                            let display = if channel.is_empty() || channel == "STABLE" {
+                                id.clone()
+                            } else {
+                                format!("{id} ({channel})")
+                            };
+                            Some(JarBuildInfo {
+                                version: version.to_string(),
+                                build: id,
+                                display,
+                            })
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            Ok(builds)
+        }
+        "purpur" => {
+            let val: Value = client
+                .get(format!("https://api.purpurmc.org/v2/purpur/{version}"))
+                .send()
+                .await?
+                .error_for_status()?
+                .json()
+                .await?;
+            let mut builds: Vec<JarBuildInfo> = val
+                .pointer("/builds/all")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|b| b.as_str())
+                        .map(|b| JarBuildInfo {
+                            version: version.to_string(),
+                            build: b.to_string(),
+                            display: b.to_string(),
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            builds.reverse();
+            Ok(builds)
+        }
+        "fabric" => {
+            let val: Value = client
+                .get("https://meta.fabricmc.net/v2/versions/loader")
+                .send()
+                .await?
+                .error_for_status()?
+                .json()
+                .await?;
+            Ok(val
+                .as_array()
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|b| b.get("version").and_then(|v| v.as_str()))
+                        .take(25)
+                        .map(|b| JarBuildInfo {
+                            version: version.to_string(),
+                            build: b.to_string(),
+                            display: b.to_string(),
+                        })
+                        .collect()
+                })
+                .unwrap_or_default())
+        }
+        _ => Ok(vec![JarBuildInfo {
+            version: version.to_string(),
+            build: "latest".to_string(),
+            display: "latest".to_string(),
+        }]),
+    }
+}
+
 fn parse_version_group(group: &str) -> Vec<u32> {
     group
         .split(|c: char| !c.is_ascii_digit())

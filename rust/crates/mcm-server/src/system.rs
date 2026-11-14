@@ -1,6 +1,6 @@
 use crate::auth::User;
 use crate::error::ApiError;
-use crate::jars::list_versions;
+use crate::jars::{list_builds, list_versions};
 use crate::ports::{create_reservation, delete_reservation, list_reservations};
 use crate::servers::ServerStore;
 use axum::{
@@ -77,9 +77,21 @@ pub async fn handle_jar_versions(
     let versions = list_versions(&store.http, &software)
         .await
         .map_err(|e| ApiError::internal(format!("fetch versions: {e}")))?;
-    Ok(Json(
-        serde_json::json!({ "software": software, "versions": versions }),
-    ))
+    let metas: Vec<serde_json::Value> = versions
+        .into_iter()
+        .map(|name| serde_json::json!({ "name": name }))
+        .collect();
+    Ok(Json(metas))
+}
+
+pub async fn handle_jar_builds(
+    State(store): State<ServerStore>,
+    Path((software, version)): Path<(String, String)>,
+) -> Result<impl IntoResponse, ApiError> {
+    let builds = list_builds(&store.http, &software, &version)
+        .await
+        .map_err(|e| ApiError::internal(format!("fetch builds: {e}")))?;
+    Ok(Json(builds))
 }
 
 pub async fn handle_list_port_reservations(
