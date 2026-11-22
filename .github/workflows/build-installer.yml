@@ -63,3 +63,28 @@ jobs:
         with:
           name: mcm-deb-${{ matrix.arch }}
           path: dist/mcm_*_${{ matrix.arch }}.deb
+
+  release:
+    needs: build-deb
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download .deb artifacts
+        uses: actions/download-artifact@v7
+        with:
+          pattern: mcm-deb-*
+          path: dist
+          merge-multiple: true
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/*.deb --clobber
+          else
+            gh release create "$TAG" dist/*.deb --title "$TAG" --generate-notes
+          fi
