@@ -1,0 +1,24 @@
+services:
+  mcm:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: mcm
+    restart: unless-stopped
+    ports:
+      - "${MCM_PANEL_PORT:-8080}:8080"
+      - "25565-25575:25565-25575/tcp"
+      - "25565-25575:25565-25575/udp"
+    volumes:
+      - mcm-data:/var/lib/mcm
+    environment:
+      MCM_ADDR: ":8080"
+      MCM_DATA_DIR: /var/lib/mcm
+      MCM_BACKUP_DIR: /var/lib/mcm/backups
+      MCM_DB_PATH: /var/lib/mcm/mcm.db
+      MCM_PORT_RANGE: "25565-25575"
+      MCM_HTTP_ONLY: "${MCM_HTTP_ONLY:-false}"
+      MCM_SESSION_SECRET: "${MCM_SESSION_SECRET:-}"
+
+volumes:
+  mcm-data:

@@ -93,7 +93,8 @@ Version: ${VERSION}
 Section: games
 Priority: optional
 Architecture: ${ARCH}
-Depends: openjdk-21-jre-headless | openjdk-17-jre-headless | default-jre-headless, adduser, openssl, ca-certificates
+Depends: adduser, openssl, ca-certificates
+Recommends: openjdk-21-jre-headless | openjdk-17-jre-headless | temurin-21-jre | default-jre-headless
 Maintainer: MCM <noreply@example.com>
 Description: Minecraft Server Manager (native Rust panel and CLI)
  Native Linux Minecraft server management panel and Proxmox-style CLI (mcm-cli).
