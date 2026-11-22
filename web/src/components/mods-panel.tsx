@@ -38,6 +38,7 @@ import { resolveInstalledModMetadata } from '../api/mod-details';
 import type { ModUpdateInfo } from '../api/mod-updates';
 import { ModJarPickerDialog } from './mod-jar-picker-dialog';
 import { InstalledModDetailsDialog } from './installed-mod-details-dialog';
+import { DatapacksPanel } from './datapacks-panel';
 import { downloadModList } from '../lib/modlist-export';
 
 function InstalledModIcon({ name, src }: { name: string; src?: string }) {
@@ -62,7 +63,7 @@ function InstalledModIcon({ name, src }: { name: string; src?: string }) {
 
 export function ModsPanel({ server }: { server: Server }) {
   const can = usePermissions();
-  const [activeTab, setActiveTab] = useState<'installed' | 'modpacks' | 'updates' | 'version-helper' | 'browse'>('installed');
+  const [activeTab, setActiveTab] = useState<'installed' | 'modpacks' | 'updates' | 'version-helper' | 'browse' | 'datapacks'>('installed');
   const [items, setItems] = useState<Mod[]>([]);
   const [modIcons, setModIcons] = useState<Record<string, string>>({});
   const [type, setType] = useState<'mods' | 'plugins'>('mods');
@@ -552,6 +553,19 @@ export function ModsPanel({ server }: { server: Server }) {
               <Compass className="h-4 w-4" />
               Browse catalogs
               <span className="flex h-2 w-2 rounded-full bg-emerald-500 " />
+            </button>
+
+            <button aria-pressed={activeTab === 'datapacks'}
+              type="button"
+              onClick={() => setActiveTab('datapacks')}
+              className={`inline-flex items-center gap-2 rounded-lg px-3.5 py-2 text-sm font-semibold transition-colors ${
+                activeTab === 'datapacks'
+                  ? 'bg-accent text-accent-foreground'
+                  : 'text-muted-foreground hover:bg-secondary/60 hover:text-foreground'
+              }`}
+            >
+              <Package className="h-4 w-4" />
+              Datapacks
             </button>
           </div>
 
@@ -1168,6 +1182,10 @@ export function ModsPanel({ server }: { server: Server }) {
               void load(true);
             }}
           />
+        )}
+
+        {activeTab === 'datapacks' && (
+          <DatapacksPanel serverId={server.id} mcVersion={server.version} />
         )}
       </div>
 

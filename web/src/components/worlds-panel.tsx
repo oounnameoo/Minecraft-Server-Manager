@@ -1,8 +1,9 @@
 import { usePermissions } from '../lib/auth';
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
-import { ArrowRightLeft, Check, ChevronLeft, ChevronRight, Download, Globe2, Grid2X2, Loader2, Plus, RefreshCw, Trash2, Upload, X } from 'lucide-react';
+import { ArrowRightLeft, Check, ChevronLeft, ChevronRight, Download, Globe2, Grid2X2, Loader2, Package, Plus, RefreshCw, Trash2, Upload, X } from 'lucide-react';
 import { ApiError } from '../api/client';
 import { worldApi, type World, type WorldInput, type WorldList, type WorldChunk, type WorldRegion, type WorldRegions } from '../api/worlds';
+import { DatapacksPanel } from './datapacks-panel';
 import type { ServerState } from '../api/types';
 import { formatBytes } from '../lib/formatters';
 import { Button } from './ui/button';
@@ -32,6 +33,7 @@ export function WorldsPanel({ serverId, state, serverType }: { serverId: string;
   const [input, setInput] = useState<WorldInput>(blank);
   const [file, setFile] = useState<File | null>(null);
   const [chunksOpen, setChunksOpen] = useState(false);
+  const [datapacksOpen, setDatapacksOpen] = useState(false);
   const [revision, setRevision] = useState(0);
   const { confirm, dialog } = useModal();
   const editable = canManage && !!data?.editable && (state === 'stopped' || state === 'error') && !loadError;
@@ -112,9 +114,10 @@ export function WorldsPanel({ serverId, state, serverType }: { serverId: string;
             <dl className="mt-6 grid gap-x-6 gap-y-4 sm:grid-cols-2"><div className="sm:col-span-2"><dt className="text-xs text-muted-foreground">{world.generated ? 'Saved world seed' : 'Generation seed'}</dt><dd className="mt-1 break-all font-mono text-sm select-all">{world.seed ?? (world.generated ? 'Unavailable in world metadata' : 'Random on first start')}{world.seed === '' && 'Random on first start'}</dd></div><div><dt className="text-xs text-muted-foreground">{world.generated ? 'Last saved version' : 'Generator'}</dt><dd className="mt-1 text-sm">{world.generated ? world.version || 'Unknown' : generatorName(world.level_type)}</dd></div><div><dt className="text-xs text-muted-foreground">Disk usage</dt><dd className="mt-1 text-sm tabular-nums">{formatBytes(world.size_bytes)}</dd></div><div><dt className="text-xs text-muted-foreground">Last modified</dt><dd className="mt-1 text-sm">{new Date(world.modified_at).toLocaleString()}</dd></div><div><dt className="text-xs text-muted-foreground">Dimensions</dt><dd className="mt-1 text-sm">{world.dimensions.map((dimension) => dimension.name).join(', ')}</dd></div></dl>
             {world.metadata_error && <p className="mt-4 text-sm text-destructive">World metadata could not be read. Export a copy and inspect level.dat before using this save.</p>}
             {!world.generated && <p className="mt-4 text-sm text-muted-foreground">Make this world active, then start the server to generate terrain. Seed and generator settings can be changed until then.</p>}
-            <div className="mt-6 flex flex-wrap gap-2 border-t pt-4"><Button variant="outline" disabled={!world.generated || busy} onClick={() => setChunksOpen((value) => !value)} aria-expanded={chunksOpen}><Grid2X2 className="h-4 w-4" />{chunksOpen ? 'Hide chunks' : 'Manage chunks'}</Button>{!world.generated && <Button variant="outline" disabled={!editable || busy} onClick={() => open('edit')}>Generation settings</Button>}<Button variant="outline" disabled={!can('worlds.export', serverId) || !data?.editable || busy || !world.generated} onClick={() => void run(async () => { await worldApi.export(serverId, world.name); setNotice('World ZIP downloaded.'); })}><Download className="h-4 w-4" />Export ZIP</Button><Button variant="ghost" disabled={!editable || busy || world.active} onClick={() => void remove()}><Trash2 className="h-4 w-4" />Delete world</Button></div>
+            <div className="mt-6 flex flex-wrap gap-2 border-t pt-4"><Button variant="outline" disabled={!world.generated || busy} onClick={() => setChunksOpen((value) => !value)} aria-expanded={chunksOpen}><Grid2X2 className="h-4 w-4" />{chunksOpen ? 'Hide chunks' : 'Manage chunks'}</Button><Button variant="outline" disabled={!world.generated || busy} onClick={() => setDatapacksOpen((value) => !value)} aria-expanded={datapacksOpen}><Package className="h-4 w-4" />{datapacksOpen ? 'Hide datapacks' : 'Datapacks'}</Button>{!world.generated && <Button variant="outline" disabled={!editable || busy} onClick={() => open('edit')}>Generation settings</Button>}<Button variant="outline" disabled={!can('worlds.export', serverId) || !data?.editable || busy || !world.generated} onClick={() => void run(async () => { await worldApi.export(serverId, world.name); setNotice('World ZIP downloaded.'); })}><Download className="h-4 w-4" />Export ZIP</Button><Button variant="ghost" disabled={!editable || busy || world.active} onClick={() => void remove()}><Trash2 className="h-4 w-4" />Delete world</Button></div>
           </div>
           {chunksOpen && <WorldChunks key={world.name} serverId={serverId} world={world} editable={editable && !busy} onChanged={() => setRevision((value) => value + 1)} />}
+          {datapacksOpen && <DatapacksPanel key={`dp-${world.name}`} serverId={serverId} worldName={world.name} mcVersion={world.version} />}
         </div>}
       </div>}
     </section>

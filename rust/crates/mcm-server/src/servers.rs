@@ -210,7 +210,10 @@ impl ServerStore {
         impl Drop for DirCleanup<'_> {
             fn drop(&mut self) {
                 if !self.1 {
-                    eprintln!("[create] aborted/dropped before completion, removing {:?}", self.0);
+                    eprintln!(
+                        "[create] aborted/dropped before completion, removing {:?}",
+                        self.0
+                    );
                     let _ = std::fs::remove_dir_all(self.0);
                 }
             }
@@ -709,8 +712,39 @@ pub async fn handle_server_stats(
 ) -> Result<impl IntoResponse, ApiError> {
     check_server_perm(&user, &id, "performance.read")?;
     let srv = store.get(&id)?;
-    let stats = store.runtime.stats(&id, srv.ram_mb).await;
-    Ok(Json(serde_json::json!(stats)))
+    let online = store.runtime.is_running(&id).await;
+    let st = store.runtime.stats(&id, srv.ram_mb).await;
+    let cpu_cores = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1);
+    let limit_mb = if srv.memory_limit_mb > 0 {
+        srv.memory_limit_mb
+    } else {
+        srv.ram_mb
+    }
+    .max(1) as u64;
+    let memory_bytes = (st.memory_used_mb.max(0.0) * 1024.0 * 1024.0) as u64;
+    let memory_limit_bytes = limit_mb * 1024 * 1024;
+    let memory_percent = if memory_limit_bytes > 0 {
+        (memory_bytes as f64 / memory_limit_bytes as f64) * 100.0
+    } else {
+        0.0
+    };
+    let disk_bytes = crate::worlds::dir_size(&store.server_dir(&id));
+
+    Ok(Json(serde_json::json!({
+        "server_id": id,
+        "online": online,
+        "cpu_percent": st.cpu_percent,
+        "cpu_cores": cpu_cores,
+        "cpu_limit": srv.cpu_limit,
+        "memory_bytes": memory_bytes,
+        "memory_limit_bytes": memory_limit_bytes,
+        "memory_percent": memory_percent,
+        "disk_bytes": disk_bytes,
+        "net_rx_bytes": st.network_rx_bytes,
+        "net_tx_bytes": st.network_tx_bytes,
+    })))
 }
 
 #[derive(Deserialize)]
@@ -752,12 +786,102 @@ pub async fn handle_server_logs(
 ) -> Result<impl IntoResponse, ApiError> {
     check_server_perm(&user, &id, "logs.read")?;
     let _ = store.get(&id)?;
+    let root = store.server_dir(&id);
     let tail = q.tail.parse::<usize>().unwrap_or(200);
-    let lines = store
-        .runtime
-        .logs_tail(&id, &store.server_dir(&id), tail)
-        .await;
-    Ok(Json(serde_json::json!({ "lines": lines })))
+    let lines = store.runtime.logs_tail(&id, &root, tail).await;
+
+    let mut files = Vec::new();
+    for dir_name in ["logs", "crash-reports"] {
+        let dir = root.join(dir_name);
+        if let Ok(rd) = std::fs::read_dir(&dir) {
+            for entry in rd.flatten() {
+                let path = entry.path();
+                if !path.is_file() {
+                    continue;
+                }
+                let name = entry.file_name().to_string_lossy().to_string();
+                let meta = entry.metadata().ok();
+                let size_bytes = meta.as_ref().map(|m| m.len()).unwrap_or(0);
+                let modified_at = meta
+                    .as_ref()
+                    .and_then(|m| m.modified().ok())
+                    .map(|t| chrono::DateTime::<chrono::Utc>::from(t).to_rfc3339())
+                    .unwrap_or_default();
+                files.push(serde_json::json!({
+                    "path": format!("{dir_name}/{name}"),
+                    "name": name,
+                    "size_bytes": size_bytes,
+                    "modified_at": modified_at,
+                    "archive": name.ends_with(".gz"),
+                }));
+            }
+        }
+    }
+    files.sort_by(|a, b| {
+        let an = a.get("name").and_then(|v| v.as_str()).unwrap_or("");
+        let bn = b.get("name").and_then(|v| v.as_str()).unwrap_or("");
+        match (an == "latest.log", bn == "latest.log") {
+            (true, false) => std::cmp::Ordering::Less,
+            (false, true) => std::cmp::Ordering::Greater,
+            _ => bn.cmp(an),
+        }
+    });
+
+    Ok(Json(serde_json::json!({ "files": files, "lines": lines })))
+}
+
+#[derive(Deserialize)]
+pub struct LogContentQuery {
+    pub path: String,
+    #[serde(default)]
+    pub max_bytes: Option<usize>,
+}
+
+pub async fn handle_server_log_content(
+    State(store): State<ServerStore>,
+    Extension(user): Extension<User>,
+    Path(id): Path<String>,
+    Query(q): Query<LogContentQuery>,
+) -> Result<impl IntoResponse, ApiError> {
+    check_server_perm(&user, &id, "logs.read")?;
+    let _ = store.get(&id)?;
+    let target = crate::files::safe_resolve(&store.server_dir(&id), &q.path)?;
+    if !target.is_file() {
+        return Err(ApiError::not_found("log file not found"));
+    }
+    let limit_bytes = q
+        .max_bytes
+        .unwrap_or(512 * 1024)
+        .clamp(1024, 4 * 1024 * 1024);
+    let raw = tokio::fs::read(&target)
+        .await
+        .map_err(|e| ApiError::internal(format!("read log: {e}")))?;
+
+    let decoded = if q.path.ends_with(".gz") {
+        use std::io::Read;
+        let mut gz = flate2::read::GzDecoder::new(&raw[..]);
+        let mut buf = Vec::new();
+        gz.read_to_end(&mut buf)
+            .map_err(|e| ApiError::internal(format!("decompress log: {e}")))?;
+        buf
+    } else {
+        raw
+    };
+
+    let truncated = decoded.len() > limit_bytes;
+    let slice = if truncated {
+        &decoded[decoded.len() - limit_bytes..]
+    } else {
+        &decoded[..]
+    };
+    let content = String::from_utf8_lossy(slice).to_string();
+
+    Ok(Json(serde_json::json!({
+        "path": q.path,
+        "content": content,
+        "truncated": truncated,
+        "limit_bytes": limit_bytes,
+    })))
 }
 
 pub async fn handle_console_ws(
@@ -808,6 +932,23 @@ async fn console_ws_loop(mut socket: WebSocket, store: ServerStore, srv: Server)
     }
 }
 
+fn format_console_event(line: &str) -> Event {
+    let level = if line.contains("ERROR") || line.contains("SEVERE") {
+        "error"
+    } else if line.contains("WARN") {
+        "warn"
+    } else {
+        "info"
+    };
+    let payload = serde_json::json!({
+        "timestamp": Utc::now().to_rfc3339(),
+        "level": level,
+        "message": line,
+    })
+    .to_string();
+    Event::default().data(payload)
+}
+
 pub async fn handle_console_sse(
     State(store): State<ServerStore>,
     Extension(user): Extension<User>,
@@ -818,20 +959,39 @@ pub async fn handle_console_sse(
     let _ = store.get(&id)?;
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Event, std::convert::Infallible>>(64);
 
-    if let Some((snapshot, mut log_rx)) = store.runtime.subscribe_logs(&id).await {
-        tokio::spawn(async move {
-            for line in snapshot {
-                if tx.send(Ok(Event::default().data(line))).await.is_err() {
-                    return;
+    tokio::spawn(async move {
+        let mut sent_tail = false;
+        loop {
+            if let Some((snapshot, mut log_rx)) = store.runtime.subscribe_logs(&id).await {
+                for line in snapshot {
+                    if tx.send(Ok(format_console_event(&line))).await.is_err() {
+                        return;
+                    }
                 }
-            }
-            while let Ok(line) = log_rx.recv().await {
-                if tx.send(Ok(Event::default().data(line))).await.is_err() {
-                    break;
+                while let Ok(line) = log_rx.recv().await {
+                    if tx.send(Ok(format_console_event(&line))).await.is_err() {
+                        return;
+                    }
                 }
+                sent_tail = true;
+            } else if !sent_tail {
+                let tail = store
+                    .runtime
+                    .logs_tail(&id, &store.server_dir(&id), 200)
+                    .await;
+                for line in tail {
+                    if tx.send(Ok(format_console_event(&line))).await.is_err() {
+                        return;
+                    }
+                }
+                sent_tail = true;
             }
-        });
-    }
+            if tx.is_closed() {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        }
+    });
 
     Ok(Sse::new(tokio_stream::wrappers::ReceiverStream::new(rx)).keep_alive(KeepAlive::default()))
 }

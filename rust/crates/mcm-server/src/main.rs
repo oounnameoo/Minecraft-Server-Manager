@@ -1,9 +1,12 @@
 mod assets;
 mod auth;
 mod backups;
+mod datapacks;
 mod error;
 mod files;
 mod jars;
+mod nbt;
+mod performance;
 mod players;
 mod ports;
 mod properties;
@@ -40,6 +43,7 @@ async fn main() -> Result<()> {
     tokio::spawn(async move {
         boot_servers.auto_start_servers().await;
     });
+    performance::spawn_sampler(server_store.clone());
 
     let app_state = routes::AppState {
         auth: auth_store,

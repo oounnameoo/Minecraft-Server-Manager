@@ -62,7 +62,7 @@ describe('CreateServerDialog', () => {
     expect(screen.getByRole('combobox', { name: 'Version' })).toHaveTextContent('1.22-pre1');
   });
 
-  it('immediately closes the dialog on submit and invokes onCreated in background', async () => {
+  it('keeps the dialog open while creation is in flight and closes after onCreated', async () => {
     vi.spyOn(api, 'javaVersions').mockResolvedValue([
       { version: 21, is_lts: true, name: 'Java 21' },
     ]);
@@ -110,22 +110,22 @@ describe('CreateServerDialog', () => {
       fireEvent.click(submitBtn);
     });
 
-    // The dialog should close IMMEDIATELY upon submit!
-    expect(screen.queryByRole('heading', { name: 'Create server' })).toBeNull();
-    // onCreated has not resolved yet since createServer is in flight
+    // Dialog stays open to show creation progress while createServer is in flight
+    expect(screen.getByRole('heading', { name: 'Create server' })).toBeInTheDocument();
     expect(onCreatedMock).not.toHaveBeenCalled();
 
-    // Now resolve the background creation
+    // Now resolve creation
     await act(async () => {
       resolveCreateServer!(mockCreatedServer);
     });
 
-    // onCreated callback is triggered
+    // Dialog closes and onCreated callback is triggered
+    expect(screen.queryByRole('heading', { name: 'Create server' })).toBeNull();
     expect(onCreatedMock).toHaveBeenCalledTimes(1);
     expect(onErrorMock).not.toHaveBeenCalled();
   });
 
-  it('notifies onError callback if background creation fails', async () => {
+  it('keeps the dialog open and notifies onError callback if creation fails', async () => {
     vi.spyOn(api, 'javaVersions').mockResolvedValue([]);
     vi.spyOn(api, 'availablePorts').mockResolvedValue({ available: [25565], used: [] });
     vi.spyOn(api, 'listServers').mockResolvedValue([]);
@@ -162,14 +162,15 @@ describe('CreateServerDialog', () => {
       fireEvent.click(submitBtn);
     });
 
-    // Modal closed immediately
-    expect(screen.queryByRole('heading', { name: 'Create server' })).toBeNull();
+    expect(screen.getByRole('heading', { name: 'Create server' })).toBeInTheDocument();
 
-    // Reject creation in background
+    // Reject creation
     await act(async () => {
       rejectCreateServer!(new ApiError(500, 'Docker daemon unavailable'));
     });
 
+    expect(screen.getByRole('heading', { name: 'Create server' })).toBeInTheDocument();
+    expect(screen.getByText('Docker daemon unavailable')).toBeInTheDocument();
     expect(onErrorMock).toHaveBeenCalledWith('Docker daemon unavailable');
     expect(onCreatedMock).not.toHaveBeenCalled();
   });

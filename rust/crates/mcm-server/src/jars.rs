@@ -521,7 +521,11 @@ async fn download_to_file_with_progress(
         .await
         .with_context(|| format!("download {url}"))?;
     if !resp.status().is_success() {
-        return Err(anyhow!("upstream download failed ({}): {}", resp.status(), url));
+        return Err(anyhow!(
+            "upstream download failed ({}): {}",
+            resp.status(),
+            url
+        ));
     }
     let total = resp.content_length().unwrap_or(0);
     if let Some(cb) = &progress {
@@ -695,7 +699,13 @@ async fn install_quilt_server(
     run_java_installer(
         dest_dir,
         "quilt-installer.jar",
-        &["install", "server", version, "--download-server", "--install-dir=."],
+        &[
+            "install",
+            "server",
+            version,
+            "--download-server",
+            "--install-dir=.",
+        ],
     )
     .await?;
     let _ = std::fs::remove_file(&installer_path);
@@ -810,7 +820,9 @@ mod tests {
         });
         assert_eq!(
             extract_papermc_versions(&payload),
-            vec!["26.1.2", "26.1.1", "1.21.11", "1.21.4", "1.20.6", "1.20.4", "1.8.8"]
+            vec![
+                "26.1.2", "26.1.1", "1.21.11", "1.21.4", "1.20.6", "1.20.4", "1.8.8"
+            ]
         );
     }
 

@@ -306,15 +306,15 @@ export function BackupsPanel({ server }: { server: Server }) {
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="flex flex-wrap gap-2 border-b pb-4" aria-label="Backup views">
-            <Button size="sm" variant={view === 'backups' ? 'secondary' : 'ghost'} aria-pressed={view === 'backups'} onClick={() => changeView('backups')}><Archive />Saved backups ({backups.length})</Button>
-            <Button size="sm" variant={view === 'trash' ? 'secondary' : 'ghost'} aria-pressed={view === 'trash'} onClick={() => changeView('trash')}><Trash2 />Trash ({trash.length})</Button>
-            <Button size="sm" variant={view === 'retention' ? 'secondary' : 'ghost'} aria-pressed={view === 'retention'} onClick={() => changeView('retention')}><ShieldCheck />Retention</Button>
+            <Button size="sm" className="gap-1.5" variant={view === 'backups' ? 'secondary' : 'ghost'} aria-pressed={view === 'backups'} onClick={() => changeView('backups')}><Archive className="h-4 w-4" />Saved backups ({backups.length})</Button>
+            <Button size="sm" className="gap-1.5" variant={view === 'trash' ? 'secondary' : 'ghost'} aria-pressed={view === 'trash'} onClick={() => changeView('trash')}><Trash2 className="h-4 w-4" />Trash ({trash.length})</Button>
+            <Button size="sm" className="gap-1.5" variant={view === 'retention' ? 'secondary' : 'ghost'} aria-pressed={view === 'retention'} onClick={() => changeView('retention')}><ShieldCheck className="h-4 w-4" />Retention</Button>
           </div>
           {view === 'retention' && <BackupRetentionSettings serverId={server.id} canManage={can('backups.delete', server.id)} disabled={disabled} onCleanup={load} />}
           {/* Create / Upload form */}
-          {view === 'backups' && <form className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-[minmax(0,1fr)_160px_auto]" onSubmit={(event) => { event.preventDefault(); if (!disabled) void createBackup(); }}>
-            <div className="space-y-1.5">
-              <Label htmlFor="backup-name">Backup name (optional)</Label>
+          {view === 'backups' && <form className="grid grid-cols-1 items-end gap-4 sm:grid-cols-2 xl:grid-cols-[minmax(0,1fr)_160px_auto]" onSubmit={(event) => { event.preventDefault(); if (!disabled) void createBackup(); }}>
+            <div>
+              <Label htmlFor="backup-name" className="mb-1.5 block">Backup name (optional)</Label>
               <Input
                 id="backup-name"
                 placeholder="pre-update"
@@ -323,8 +323,8 @@ export function BackupsPanel({ server }: { server: Server }) {
                 disabled={disabled || !canManage}
               />
             </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="backup-storage">Storage target</Label>
+            <div>
+              <Label htmlFor="backup-storage" className="mb-1.5 block">Storage target</Label>
               <Select
                 id="backup-storage"
                 value={storage}
@@ -335,8 +335,8 @@ export function BackupsPanel({ server }: { server: Server }) {
                 <option value="s3">S3 Cloud</option>
               </Select>
             </div>
-            <div className="flex flex-wrap items-end gap-2 sm:col-span-2 xl:col-span-1">
-              <Button type="submit" disabled={disabled || !canManage} className="flex-1 font-semibold">
+            <div className="flex flex-wrap items-center gap-2 sm:col-span-2 xl:col-span-1">
+              <Button type="submit" disabled={disabled || !canManage} className="flex-1 sm:flex-initial font-semibold">
                 <Plus className="h-4 w-4 mr-1" /> {busy ? 'Processing…' : 'Create backup'}
               </Button>
               <input
@@ -353,6 +353,7 @@ export function BackupsPanel({ server }: { server: Server }) {
                 }}
               />
               <Button
+                type="button"
                 variant="outline"
                 disabled={disabled || !canManage}
                 onClick={() => fileInputRef.current?.click()}
@@ -437,8 +438,8 @@ export function BackupsPanel({ server }: { server: Server }) {
           {message && <p role="status" className="text-sm text-foreground">{message}</p>}
           {loadError && <div role="alert" className="flex flex-wrap items-center justify-between gap-3 text-sm text-destructive"><p>{loadError}</p><Button variant="outline" size="sm" disabled={refreshing} onClick={() => void load()}>Try again</Button></div>}
 
-          {view !== 'retention' && list.length > 0 && <div className="flex flex-wrap gap-3 border-t pt-5">
-            <div className="relative min-w-0 flex-1 basis-48"><Search className="pointer-events-none absolute left-3 top-3 h-4 w-4 text-muted-foreground" /><Input aria-label="Search backups" placeholder="Search backups…" value={query} onChange={(event) => setQuery(event.target.value)} className="pl-9" /></div>
+          {view !== 'retention' && list.length > 0 && <div className="flex flex-wrap items-center gap-3 border-t pt-5">
+            <div className="relative min-w-0 flex-1 basis-48"><Search className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" /><Input aria-label="Search backups" placeholder="Search backups…" value={query} onChange={(event) => setQuery(event.target.value)} className="pl-9" /></div>
             <Select aria-label="Filter backup storage" className="w-full sm:w-40" value={locationFilter} onValueChange={(selectedValue) => setLocationFilter(selectedValue)}><option value="all">All storage</option><option value="local">Local disk</option><option value="s3">S3 cloud</option></Select>
           </div>}
 
@@ -453,10 +454,10 @@ export function BackupsPanel({ server }: { server: Server }) {
               return (
                 <div
                   key={b.id}
-                  className="flex flex-wrap items-center justify-between gap-3 border-b py-4 text-sm last:border-0"
+                  className="flex items-center justify-between gap-3 border-b py-3.5 text-sm last:border-0"
                 >
                   {can('backups.delete', server.id) && <input type="checkbox" className="h-4 w-4 shrink-0 accent-primary" aria-label={`Select ${b.name}`} checked={selection.has(b.id)} disabled={disabled || b.protected || b.status === 'pending'} onChange={(e) => setSelection((current) => { const next = new Set(current); if (e.target.checked) next.add(b.id); else next.delete(b.id); return next; })} />}
-                  <div className="min-w-0 flex-1 basis-48 space-y-1">
+                  <div className="min-w-0 flex-1 space-y-1">
                     <div className="flex min-w-0 flex-wrap items-center gap-2">
                       <p className="min-w-0 break-all font-medium text-foreground">{b.name}</p>
                       <span className="inline-flex items-center rounded-md border bg-muted px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground">
@@ -472,10 +473,10 @@ export function BackupsPanel({ server }: { server: Server }) {
                   </div>
                   <div className="flex shrink-0 items-center gap-1">
                     {view === 'trash' ? <>
-                      <Button variant="outline" size="sm" disabled={disabled || !can('backups.delete', server.id)} onClick={() => void manage('recover', b)}><Undo2 />Recover</Button>
-                      <Button variant="ghost" size="icon" aria-label="Delete permanently" title="Delete permanently" disabled={disabled || !can('backups.delete', server.id)} onClick={() => void manage('purge', b)}><Trash2 className="text-destructive" /></Button>
+                      <Button variant="outline" size="sm" className="gap-1.5" disabled={disabled || !can('backups.delete', server.id)} onClick={() => void manage('recover', b)}><Undo2 className="h-4 w-4" />Recover</Button>
+                      <Button variant="ghost" size="icon" aria-label="Delete permanently" title="Delete permanently" disabled={disabled || !can('backups.delete', server.id)} onClick={() => void manage('purge', b)}><Trash2 className="h-4 w-4 text-destructive" /></Button>
                     </> : <>
-                    <Button variant="ghost" size="icon" aria-label={b.protected ? 'Unprotect backup' : 'Protect backup'} title={b.protected ? 'Remove protection' : 'Protect from retention and deletion'} onClick={() => void manage('protect', b)} disabled={disabled || !can('backups.delete', server.id) || b.status !== 'completed'}>{b.protected ? <ShieldOff /> : <ShieldCheck />}</Button>
+                    <Button variant="ghost" size="icon" aria-label={b.protected ? 'Unprotect backup' : 'Protect backup'} title={b.protected ? 'Remove protection' : 'Protect from retention and deletion'} onClick={() => void manage('protect', b)} disabled={disabled || !can('backups.delete', server.id) || b.status !== 'completed'}>{b.protected ? <ShieldOff className="h-4 w-4" /> : <ShieldCheck className="h-4 w-4" />}</Button>
                     <Button
                       variant="ghost"
                       size="icon"

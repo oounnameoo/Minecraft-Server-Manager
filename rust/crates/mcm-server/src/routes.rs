@@ -1,5 +1,6 @@
 use crate::{
-    assets, auth, backups, files, players, properties, schedules, servers, system, worlds,
+    assets, auth, backups, datapacks, files, nbt, performance, players, properties, schedules,
+    servers, system, worlds,
 };
 use axum::{
     Router,
@@ -91,6 +92,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/servers/{id}/stats", get(servers::handle_server_stats))
         .route("/api/servers/{id}/logs", get(servers::handle_server_logs))
         .route(
+            "/api/servers/{id}/logs/content",
+            get(servers::handle_server_log_content),
+        )
+        .route(
             "/api/servers/{id}/console",
             get(servers::handle_console_sse),
         )
@@ -111,6 +116,10 @@ pub fn build_router(state: AppState) -> Router {
             "/api/servers/{id}/files/content",
             get(files::handle_read_file).put(files::handle_write_file),
         )
+        .route(
+            "/api/servers/{id}/files/nbt",
+            get(nbt::handle_read_nbt).put(nbt::handle_write_nbt),
+        )
         .route("/api/servers/{id}/files/mkdir", post(files::handle_mkdir))
         .route(
             "/api/servers/{id}/files/rename",
@@ -124,12 +133,44 @@ pub fn build_router(state: AppState) -> Router {
             "/api/servers/{id}/files/upload",
             post(files::handle_upload_file),
         )
+        .route(
+            "/api/servers/{id}/files/from_url",
+            post(files::handle_download_from_url),
+        )
+        .route(
+            "/api/servers/{id}/files/copy",
+            post(files::handle_copy_files),
+        )
+        .route(
+            "/api/servers/{id}/files/move",
+            post(files::handle_move_files),
+        )
+        .route(
+            "/api/servers/{id}/files/archive",
+            post(files::handle_archive_files),
+        )
+        .route(
+            "/api/servers/{id}/files/unzip",
+            post(files::handle_unzip_file),
+        )
         // Properties
         .route(
             "/api/servers/{id}/properties",
             get(properties::handle_get_properties).put(properties::handle_put_properties),
         )
-        // Players (Ops & Whitelist)
+        // Players (Live, Data, Commands, Ops & Whitelist)
+        .route(
+            "/api/servers/{id}/players",
+            get(players::handle_list_players),
+        )
+        .route(
+            "/api/servers/{id}/players/data",
+            get(players::handle_list_player_data),
+        )
+        .route(
+            "/api/servers/{id}/players/{name}/command",
+            post(players::handle_player_command),
+        )
         .route(
             "/api/servers/{id}/ops",
             get(players::handle_list_ops).post(players::handle_add_op),
@@ -152,6 +193,35 @@ pub fn build_router(state: AppState) -> Router {
             "/api/servers/{id}/worlds/{name}",
             delete(worlds::handle_delete_world),
         )
+        .route(
+            "/api/servers/{id}/worlds/{name}/regions",
+            get(worlds::handle_world_regions),
+        )
+        .route(
+            "/api/servers/{id}/worlds/{name}/chunks",
+            get(worlds::handle_world_chunks),
+        )
+        .route(
+            "/api/servers/{id}/worlds/{name}/chunks/reset",
+            post(worlds::handle_world_chunks_reset),
+        )
+        // Datapacks
+        .route(
+            "/api/servers/{id}/datapacks",
+            get(datapacks::handle_list_datapacks),
+        )
+        .route(
+            "/api/servers/{id}/datapacks/download",
+            post(datapacks::handle_download_datapack),
+        )
+        .route(
+            "/api/servers/{id}/datapacks/toggle",
+            post(datapacks::handle_toggle_datapack),
+        )
+        .route(
+            "/api/servers/{id}/datapacks/{file}",
+            delete(datapacks::handle_delete_datapack),
+        )
         // Backups
         .route(
             "/api/servers/{id}/backups",
@@ -170,8 +240,32 @@ pub fn build_router(state: AppState) -> Router {
             get(backups::handle_download_backup),
         )
         .route(
+            "/api/servers/{id}/backups/upload",
+            post(backups::handle_upload_backup),
+        )
+        .route(
+            "/api/servers/{id}/backups/trash/empty",
+            post(backups::handle_empty_trash),
+        )
+        .route(
             "/api/backups/{backupId}",
             delete(backups::handle_delete_backup),
+        )
+        .route(
+            "/api/backups/{backupId}/download",
+            get(backups::handle_download_backup_by_id),
+        )
+        .route(
+            "/api/backups/{backupId}/protect",
+            post(backups::handle_protect_backup),
+        )
+        .route(
+            "/api/backups/{backupId}/recover",
+            post(backups::handle_recover_backup),
+        )
+        .route(
+            "/api/backups/{backupId}/purge",
+            post(backups::handle_purge_backup),
         )
         // Schedules
         .route(
@@ -247,7 +341,9 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route(
             "/api/dns",
-            get(|| async { axum::Json(serde_json::json!({ "configured": false, "enabled": false })) }),
+            get(|| async {
+                axum::Json(serde_json::json!({ "configured": false, "enabled": false }))
+            }),
         )
         .route(
             "/api/curseforge/settings",
@@ -294,19 +390,122 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route(
             "/api/servers/{id}/backups/retention",
-            get(|| async { axum::Json(serde_json::json!({ "keep_last": 10, "max_age_days": 30 })) }),
+            get(|| async {
+                axum::Json(serde_json::json!({
+                    "policy": { "keep_count": 10, "max_age_days": 30, "trash_retention_days": 7 },
+                    "to_trash": [],
+                    "to_purge": [],
+                    "trash_bytes": 0,
+                    "purge_bytes": 0
+                }))
+            })
+            .put(
+                |axum::Json(policy): axum::Json<serde_json::Value>| async move {
+                    axum::Json(serde_json::json!({
+                        "policy": policy,
+                        "to_trash": [],
+                        "to_purge": [],
+                        "trash_bytes": 0,
+                        "purge_bytes": 0
+                    }))
+                },
+            ),
+        )
+        .route(
+            "/api/servers/{id}/backups/cleanup",
+            post(|| async { axum::Json(serde_json::json!({ "trashed": 0, "purged": 0 })) }),
+        )
+        .route(
+            "/api/servers/{id}/modpack",
+            get(|| async { axum::Json(serde_json::json!({ "modpack": null })) }),
+        )
+        .route(
+            "/api/servers/{id}/mods/updates",
+            get(|| async { axum::Json(serde_json::json!({ "updates": {} })) }),
+        )
+        .route(
+            "/api/servers/{id}/mods/updates/check",
+            post(|| async { axum::Json(serde_json::json!({ "updates": {} })) }),
+        )
+        .route(
+            "/api/updates/check",
+            get(|| async {
+                axum::Json(serde_json::json!({
+                    "available": false,
+                    "current_version": mcm_core::buildinfo::VERSION,
+                    "latest_version": mcm_core::buildinfo::VERSION
+                }))
+            }),
+        )
+        .route(
+            "/api/panel/update/check",
+            get(|| async {
+                axum::Json(serde_json::json!({
+                    "available": false,
+                    "current_version": mcm_core::buildinfo::VERSION,
+                    "latest_version": mcm_core::buildinfo::VERSION
+                }))
+            }),
+        )
+        .route(
+            "/api/updates/settings",
+            get(|| async {
+                axum::Json(serde_json::json!({ "enabled": false, "channel": "stable" }))
+            })
+            .put(|axum::Json(body): axum::Json<serde_json::Value>| async move { axum::Json(body) }),
         )
         .route(
             "/api/servers/{id}/performance",
-            get(|| async { axum::Json(serde_json::json!({ "collection_mode": "off", "points": [] })) }),
+            get(performance::handle_get_performance),
         )
         .route(
             "/api/servers/{id}/performance/settings",
-            get(|| async { axum::Json(serde_json::json!({ "collection_mode": "off" })) }),
+            get(performance::handle_get_performance_settings)
+                .put(performance::handle_put_performance_settings),
+        )
+        .route(
+            "/api/servers/{id}/performance/spark",
+            post(performance::handle_capture_spark),
         )
         .route(
             "/api/servers/{id}/dns",
             get(|| async { axum::Json(serde_json::json!({ "enabled": false })) }),
+        )
+        .route(
+            "/api/servers/{id}/tasks/events",
+            get(|| async {
+                let stream = tokio_stream::wrappers::IntervalStream::new(tokio::time::interval(
+                    std::time::Duration::from_secs(15),
+                ));
+                use futures_util::StreamExt;
+                axum::response::Sse::new(stream.map(|_| {
+                    Ok::<_, std::convert::Infallible>(
+                        axum::response::sse::Event::default().comment("keepalive"),
+                    )
+                }))
+            }),
+        )
+        .route(
+            "/api/servers/{id}/tasks/cancel",
+            post(|| async { axum::Json(serde_json::json!({ "ok": true, "cancelled": false })) }),
+        )
+        .route(
+            "/api/servers/{id}/backups/events",
+            get(|| async {
+                let stream = tokio_stream::wrappers::IntervalStream::new(tokio::time::interval(
+                    std::time::Duration::from_secs(15),
+                ));
+                use futures_util::StreamExt;
+                axum::response::Sse::new(stream.map(|_| {
+                    Ok::<_, std::convert::Infallible>(
+                        axum::response::sse::Event::default().comment("keepalive"),
+                    )
+                }))
+            }),
+        )
+        .route(
+            "/api/servers/{id}/backups/cancel",
+            post(|| async { axum::Json(serde_json::json!({ "ok": true, "cancelled": false })) }),
         )
         // Middleware & SPA fallback
         .layer(middleware::from_fn_with_state(

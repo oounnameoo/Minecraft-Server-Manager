@@ -26,7 +26,7 @@ import {
   X,
 } from 'lucide-react';
 import { api, ApiError } from '../api/client';
-import type { Op, Player, PlayerCommandAction, PlayerCommandArgs, Server } from '../api/types';
+import type { Op, Player, PlayerCommandAction, PlayerCommandArgs, Server, WhitelistEntry } from '../api/types';
 import { OpsPanel } from './ops-panel';
 import { WhitelistPanel } from './whitelist-panel';
 import { GiveItemModal } from './give-item-modal';
@@ -110,6 +110,7 @@ export function PlayersPanel({ server, onNBTDirtyChange }: { server: Server; onN
   }
   const [players, setPlayers] = useState<Player[]>([]);
   const [ops, setOps] = useState<Op[]>([]);
+  const [whitelist, setWhitelist] = useState<WhitelistEntry[]>([]);
   const [source, setSource] = useState<'rcon' | 'console'>('console');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -140,6 +141,10 @@ export function PlayersPanel({ server, onNBTDirtyChange }: { server: Server; onN
     return new Set(ops.map((o) => o.name.toLowerCase()));
   }, [ops]);
 
+  const whitelistNamesSet = useMemo(() => {
+    return new Set(whitelist.map((w) => w.name.toLowerCase()));
+  }, [whitelist]);
+
   const load = useCallback(async () => {
     if (!running) {
       setPlayers([]);
@@ -149,14 +154,16 @@ export function PlayersPanel({ server, onNBTDirtyChange }: { server: Server; onN
     }
     setBusy(true);
     try {
-      const [res, opsRes] = await Promise.all([
+      const [res, opsRes, wlRes] = await Promise.all([
         api.players(server.id).catch((err) => {
           throw err;
         }),
         api.ops(server.id).catch(() => ({ ops: [] })),
+        api.whitelist(server.id).catch(() => ({ whitelist: [] })),
       ]);
       setPlayers(res.players ?? []);
       setOps(opsRes.ops ?? []);
+      setWhitelist(wlRes.whitelist ?? []);
       setSource(res.source);
       setError(null);
     } catch (err) {
@@ -165,6 +172,28 @@ export function PlayersPanel({ server, onNBTDirtyChange }: { server: Server; onN
       setBusy(false);
     }
   }, [server.id, running]);
+
+  async function toggleWhitelist(playerName: string, isWhitelisted: boolean) {
+    setError(null);
+    setNotice(null);
+    try {
+      if (isWhitelisted) {
+        await api.removeWhitelist(server.id, playerName);
+        setWhitelist((prev) => prev.filter((w) => w.name.toLowerCase() !== playerName.toLowerCase()));
+        setNotice(`Removed ${playerName} from whitelist.`);
+      } else {
+        const res = await api.addWhitelist(server.id, playerName);
+        if (res.whitelist) {
+          setWhitelist(res.whitelist);
+        } else {
+          setWhitelist((prev) => [...prev, { uuid: '', name: playerName }]);
+        }
+        setNotice(`Added ${playerName} to whitelist.`);
+      }
+    } catch (err) {
+      setError(err instanceof ApiError ? err.detail : 'Failed to update whitelist');
+    }
+  }
 
   useEffect(() => {
     void load();
@@ -500,6 +529,7 @@ export function PlayersPanel({ server, onNBTDirtyChange }: { server: Server; onN
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
                 {currentPlayers.map((p) => {
                   const isOp = opNamesSet.has(p.name.toLowerCase());
+                  const isWhitelisted = whitelistNamesSet.has(p.name.toLowerCase());
                   const copied = copiedPlayer === p.name;
                   return (
                     <div
@@ -530,6 +560,11 @@ export function PlayersPanel({ server, onNBTDirtyChange }: { server: Server; onN
                                   <Crown className="h-2.5 w-2.5" /> OP
                                 </Badge>
                               )}
+                              {isWhitelisted && (
+                                <Badge variant="secondary" className="gap-0.5 px-1 py-0 text-[11px] font-semibold text-emerald-600 dark:text-emerald-400">
+                                  <ShieldCheck className="h-2.5 w-2.5" /> Whitelisted
+                                </Badge>
+                              )}
                               {source === 'console' && (
                                 <Badge variant="outline" className="px-1 py-0 text-[11px] text-muted-foreground">
                                   console
@@ -543,10 +578,13 @@ export function PlayersPanel({ server, onNBTDirtyChange }: { server: Server; onN
                         <PlayerActionsMenu
                           canAct={can('players.manage', server.id)}
                           canOp={can('ops.manage', server.id)}
+                          canWhitelist={can('whitelist.manage', server.id)}
                           canCommand={can('console.write', server.id)}
                           player={p.name}
                           isOp={isOp}
+                          isWhitelisted={isWhitelisted}
                           onSelectAction={(action) => openAction(p.name, action)}
+                          onToggleWhitelist={() => void toggleWhitelist(p.name, isWhitelisted)}
                         />
                       </div>
 
@@ -591,6 +629,7 @@ export function PlayersPanel({ server, onNBTDirtyChange }: { server: Server; onN
               <div className="divide-y rounded-lg border">
                 {currentPlayers.map((p) => {
                   const isOp = opNamesSet.has(p.name.toLowerCase());
+                  const isWhitelisted = whitelistNamesSet.has(p.name.toLowerCase());
                   const copied = copiedPlayer === p.name;
                   return (
                     <div
@@ -615,6 +654,11 @@ export function PlayersPanel({ server, onNBTDirtyChange }: { server: Server; onN
                             {isOp && (
                               <Badge variant="secondary" className="gap-0.5 px-1.5 py-0 text-xs font-semibold text-amber-600 dark:text-amber-400">
                                 <Crown className="h-3 w-3" /> OP
+                              </Badge>
+                            )}
+                            {isWhitelisted && (
+                              <Badge variant="secondary" className="gap-0.5 px-1.5 py-0 text-xs font-semibold text-emerald-600 dark:text-emerald-400">
+                                <ShieldCheck className="h-3 w-3" /> Whitelisted
                               </Badge>
                             )}
                             {source === 'console' && (
@@ -648,10 +692,13 @@ export function PlayersPanel({ server, onNBTDirtyChange }: { server: Server; onN
                         <PlayerActionsMenu
                           canAct={can('players.manage', server.id)}
                           canOp={can('ops.manage', server.id)}
+                          canWhitelist={can('whitelist.manage', server.id)}
                           canCommand={can('console.write', server.id)}
                           player={p.name}
                           isOp={isOp}
+                          isWhitelisted={isWhitelisted}
                           onSelectAction={(action) => openAction(p.name, action)}
+                          onToggleWhitelist={() => void toggleWhitelist(p.name, isWhitelisted)}
                         />
                       </div>
                     </div>
@@ -900,17 +947,23 @@ export function PlayersPanel({ server, onNBTDirtyChange }: { server: Server; onN
 function PlayerActionsMenu({
   player,
   isOp,
+  isWhitelisted,
   canAct,
   canOp,
+  canWhitelist,
   canCommand,
   onSelectAction,
+  onToggleWhitelist,
 }: {
   player: string;
   isOp: boolean;
+  isWhitelisted: boolean;
   canAct: boolean;
   canOp: boolean;
+  canWhitelist: boolean;
   canCommand: boolean;
   onSelectAction: (action: PlayerCommandAction) => void;
+  onToggleWhitelist: () => void;
 }) {
   return (
     <DropdownMenu>
@@ -919,7 +972,7 @@ function PlayerActionsMenu({
           variant="outline"
           size="sm"
           className="h-8 gap-1 px-2.5 text-xs"
-          disabled={!canAct}
+          disabled={!canAct && !canWhitelist}
           aria-label={`Commands for ${player}`}
         >
           <span>Actions</span>
@@ -929,6 +982,12 @@ function PlayerActionsMenu({
       <DropdownMenuContent align="end" className="w-52">
         <DropdownMenuLabel className="truncate">{player}</DropdownMenuLabel>
         <DropdownMenuSeparator />
+        {canWhitelist && (
+          <DropdownMenuItem onSelect={onToggleWhitelist}>
+            <ShieldCheck className="h-4 w-4 mr-2" />
+            <span>{isWhitelisted ? 'Remove from whitelist' : 'Add to whitelist'}</span>
+          </DropdownMenuItem>
+        )}
         {ACTIONS.map((a) => {
           // Adjust label for op vs deop based on current status
           if (a.action === 'op' && isOp) return null;

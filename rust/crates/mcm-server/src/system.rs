@@ -62,6 +62,11 @@ pub async fn handle_system_capacity(
             net_tx_bytes += st.network_tx_bytes;
         }
     }
+    if net_rx_bytes == 0 && net_tx_bytes == 0 {
+        let (rx, tx) = crate::runtime::read_proc_net_dev("/proc/net/dev").await;
+        net_rx_bytes = rx;
+        net_tx_bytes = tx;
+    }
 
     Ok(Json(serde_json::json!({
         "runtime": "",
@@ -231,7 +236,10 @@ pub async fn handle_available_ports(
             }));
         }
         for ep in &s.extra_ports {
-            if let Some(ep_port) = ep.get("host_port").and_then(|v| v.as_u64()).and_then(|p| u16::try_from(p).ok())
+            if let Some(ep_port) = ep
+                .get("host_port")
+                .and_then(|v| v.as_u64())
+                .and_then(|p| u16::try_from(p).ok())
                 && ep_port > 0
             {
                 used_ports.insert(ep_port);
@@ -246,7 +254,11 @@ pub async fn handle_available_ports(
         }
     }
     for r in &reservations {
-        if let Some(r_port) = r.get("port").and_then(|v| v.as_u64()).and_then(|p| u16::try_from(p).ok()) {
+        if let Some(r_port) = r
+            .get("port")
+            .and_then(|v| v.as_u64())
+            .and_then(|p| u16::try_from(p).ok())
+        {
             used_ports.insert(r_port);
             let label = r.get("label").and_then(|v| v.as_str()).unwrap_or("");
             used_details.push(serde_json::json!({
@@ -406,7 +418,8 @@ fn load_curseforge_key(
         return (Some(val.trim().to_string()), "env");
     }
     let stored = with_db(db, |conn| {
-        let mut stmt = conn.prepare("SELECT value FROM kv_settings WHERE key = 'curseforge_api_key'")?;
+        let mut stmt =
+            conn.prepare("SELECT value FROM kv_settings WHERE key = 'curseforge_api_key'")?;
         let mut rows = stmt.query([])?;
         if let Some(row) = rows.next()? {
             let v: String = row.get(0)?;
@@ -423,9 +436,7 @@ fn load_curseforge_key(
     (None, "")
 }
 
-pub async fn handle_get_curseforge_settings(
-    State(store): State<ServerStore>,
-) -> impl IntoResponse {
+pub async fn handle_get_curseforge_settings(State(store): State<ServerStore>) -> impl IntoResponse {
     let (key, source) = load_curseforge_key(&store.db);
     Json(serde_json::json!({
         "configured": key.is_some(),
@@ -450,7 +461,10 @@ pub async fn handle_put_curseforge_settings(
     let trimmed = req.api_key.trim().to_string();
     with_db(&store.db, |conn| {
         if trimmed.is_empty() {
-            conn.execute("DELETE FROM kv_settings WHERE key = 'curseforge_api_key'", [])?;
+            conn.execute(
+                "DELETE FROM kv_settings WHERE key = 'curseforge_api_key'",
+                [],
+            )?;
         } else {
             conn.execute(
                 "INSERT INTO kv_settings (key, value) VALUES ('curseforge_api_key', ?1)
@@ -475,7 +489,10 @@ pub async fn handle_delete_curseforge_settings(
         return Err(ApiError::forbidden("missing permission settings.manage"));
     }
     with_db(&store.db, |conn| {
-        conn.execute("DELETE FROM kv_settings WHERE key = 'curseforge_api_key'", [])?;
+        conn.execute(
+            "DELETE FROM kv_settings WHERE key = 'curseforge_api_key'",
+            [],
+        )?;
         Ok(())
     })?;
     let (key, source) = load_curseforge_key(&store.db);
@@ -494,8 +511,8 @@ pub async fn handle_api_proxy(
     State(store): State<ServerStore>,
     Query(query): Query<ProxyQuery>,
 ) -> Result<Response, ApiError> {
-    let parsed = reqwest::Url::parse(&query.url)
-        .map_err(|_| ApiError::bad_request("invalid proxy url"))?;
+    let parsed =
+        reqwest::Url::parse(&query.url).map_err(|_| ApiError::bad_request("invalid proxy url"))?;
     if parsed.scheme() != "https" {
         return Err(ApiError::bad_request("proxy url must use https"));
     }
@@ -554,9 +571,7 @@ pub async fn handle_curseforge_proxy(
         .header("Accept", "application/json")
         .header("x-api-key", key);
     if !body.is_empty() {
-        req = req
-            .header("Content-Type", "application/json")
-            .body(body);
+        req = req.header("Content-Type", "application/json").body(body);
     }
     forward_upstream(req).await
 }

@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Database, Loader2, RefreshCw, Search } from 'lucide-react';
-import { ApiError } from '../api/client';
+import { Database, Loader2, RefreshCw, Search, ShieldCheck } from 'lucide-react';
+import { api, ApiError } from '../api/client';
 import { nbtApi, type PlayerDataFile } from '../api/nbt';
+import { usePermissions } from '../lib/auth';
 import { NBTEditor } from './nbt-editor';
+import { Badge } from './ui/badge';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
 
@@ -15,7 +17,12 @@ export function PlayerDataPanel({
   state: string;
   onDirtyChange?: (dirty: boolean) => void;
 }) {
+  const can = usePermissions();
+  const canWhitelist = can('whitelist.manage', serverId);
   const [players, setPlayers] = useState<PlayerDataFile[]>([]);
+  const [whitelistedNames, setWhitelistedNames] = useState<Set<string>>(new Set());
+  const [whitelistingName, setWhitelistingName] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(true);
@@ -25,7 +32,14 @@ export function PlayerDataPanel({
     setBusy(true);
     setError(null);
     try {
-      setPlayers((await nbtApi.players(serverId)).players);
+      const [playersRes, whitelistRes] = await Promise.all([
+        nbtApi.players(serverId),
+        api.whitelist(serverId).catch(() => ({ whitelist: [] })),
+      ]);
+      setPlayers(playersRes.players);
+      setWhitelistedNames(
+        new Set((whitelistRes.whitelist ?? []).map((w) => w.name.toLowerCase())),
+      );
     } catch (err) {
       setError(err instanceof ApiError ? err.detail : 'Could not load saved player data. Try again.');
     } finally {
@@ -35,6 +49,25 @@ export function PlayerDataPanel({
   useEffect(() => {
     void load();
   }, [load]);
+
+  async function addToWhitelist(playerName: string) {
+    setWhitelistingName(playerName);
+    setError(null);
+    setNotice(null);
+    try {
+      const res = await api.addWhitelist(serverId, playerName);
+      if (res.whitelist) {
+        setWhitelistedNames(new Set(res.whitelist.map((w) => w.name.toLowerCase())));
+      } else {
+        setWhitelistedNames((prev) => new Set([...prev, playerName.toLowerCase()]));
+      }
+      setNotice(`Added ${playerName} to whitelist.`);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.detail : `Failed to whitelist ${playerName}.`);
+    } finally {
+      setWhitelistingName(null);
+    }
+  }
   const filtered = useMemo(
     () =>
       players.filter((p) =>
@@ -81,6 +114,11 @@ export function PlayerDataPanel({
           className="pl-9"
         />
       </div>
+      {notice && (
+        <p role="status" className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-3 text-sm text-emerald-700 dark:text-emerald-300">
+          {notice}
+        </p>
+      )}
       {error && (
         <p role="alert" className="rounded-lg border border-destructive/40 p-3 text-sm">
           {error}
@@ -111,23 +149,55 @@ export function PlayerDataPanel({
                   </p>
                 </div>
               ) : (
-                filtered.slice(0, limit).map((p) => (
-                  <button
-                    key={p.path}
-                    type="button"
-                    onClick={() => setSelected(p.path)}
-                    className="flex w-full flex-col gap-2 px-4 py-3 text-left hover:bg-accent/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring sm:flex-row sm:items-center sm:justify-between"
-                  >
-                    <span className="min-w-0">
-                      <span className="block break-all text-sm font-medium">{p.name || p.uuid}</span>
-                      <span className="block break-all font-mono text-xs text-muted-foreground">
-                        {p.name ? `${p.uuid} · ` : ''}
-                        {p.world}
-                      </span>
-                    </span>
-                    <span className="shrink-0 text-xs text-primary">Open player data</span>
-                  </button>
-                ))
+                filtered.slice(0, limit).map((p) => {
+                  const isWhitelisted = !!p.name && whitelistedNames.has(p.name.toLowerCase());
+                  return (
+                    <div
+                      key={p.path}
+                      className="flex flex-col gap-2 px-4 py-3 hover:bg-accent/40 sm:flex-row sm:items-center sm:justify-between"
+                    >
+                      <button
+                        type="button"
+                        onClick={() => setSelected(p.path)}
+                        className="flex min-w-0 flex-1 flex-col gap-0.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded"
+                      >
+                        <span className="block break-all text-sm font-medium">{p.name || p.uuid}</span>
+                        <span className="block break-all font-mono text-xs text-muted-foreground">
+                          {p.name ? `${p.uuid} · ` : ''}
+                          {p.world}
+                        </span>
+                      </button>
+                      <div className="flex shrink-0 items-center gap-2">
+                        {canWhitelist && p.name && (
+                          isWhitelisted ? (
+                            <Badge variant="secondary" className="gap-1 text-xs text-emerald-600 dark:text-emerald-400">
+                              <ShieldCheck className="h-3 w-3" /> Whitelisted
+                            </Badge>
+                          ) : (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              disabled={whitelistingName === p.name}
+                              onClick={() => void addToWhitelist(p.name)}
+                              className="h-7 px-2.5 text-xs gap-1"
+                            >
+                              <ShieldCheck className="h-3.5 w-3.5" />
+                              {whitelistingName === p.name ? 'Adding…' : 'Add to whitelist'}
+                            </Button>
+                          )
+                        )}
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => setSelected(p.path)}
+                          className="h-7 px-2.5 text-xs text-primary"
+                        >
+                          Open player data
+                        </Button>
+                      </div>
+                    </div>
+                  );
+                })
               )}
             </div>
             {filtered.length > limit && (

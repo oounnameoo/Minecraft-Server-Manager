@@ -245,7 +245,7 @@ describe('NBT entry points', () => {
     render(<PlayersPanel server={server} />);
     await userEvent.click(screen.getByRole('button', { name: 'Player data' }));
     fireEvent.change(await screen.findByLabelText('Search saved players'), { target: { value: 'steve' } });
-    await userEvent.click(await screen.findByRole('button', { name: /Steve.*Open player data/ }));
+    await userEvent.click(await screen.findByRole('button', { name: /Steve/ }));
     expect(await screen.findByLabelText('Health')).toHaveValue('20');
   });
 
@@ -264,7 +264,7 @@ describe('NBT entry points', () => {
     const dirty = vi.fn();
     render(<PlayersPanel server={server} onNBTDirtyChange={dirty} />);
     await userEvent.click(screen.getByRole('button', { name: 'Player data' }));
-    await userEvent.click(await screen.findByRole('button', { name: /Steve.*Open player data/ }));
+    await userEvent.click(await screen.findByRole('button', { name: /Steve/ }));
     fireEvent.change(await screen.findByLabelText('Health'), { target: { value: '10' } });
     expect(dirty).toHaveBeenLastCalledWith(true);
     await userEvent.click(screen.getByRole('button', { name: /Online Players/ }));
