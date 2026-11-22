@@ -706,13 +706,17 @@ fn row_to_user(row: &rusqlite::Row) -> rusqlite::Result<User> {
 }
 
 pub fn extract_cookie(headers: &HeaderMap, name: &str) -> Option<String> {
-    let cookie_header = headers.get(header::COOKIE)?.to_str().ok()?;
-    for part in cookie_header.split(';') {
-        let trimmed = part.trim();
-        if let Some((k, v)) = trimmed.split_once('=')
-            && k.trim() == name
-        {
-            return Some(v.trim().to_string());
+    for val in headers.get_all(header::COOKIE) {
+        let Ok(cookie_header) = val.to_str() else {
+            continue;
+        };
+        for part in cookie_header.split(';') {
+            let trimmed = part.trim();
+            if let Some((k, v)) = trimmed.split_once('=')
+                && k.trim() == name
+            {
+                return Some(v.trim().to_string());
+            }
         }
     }
     None
@@ -1008,6 +1012,24 @@ mod tests {
             !store_https
                 .build_session_cookie_for(&http_proto, "tok", 60)
                 .contains("; Secure")
+        );
+    }
+
+    #[test]
+    fn extract_cookie_reads_across_multiple_cookie_headers() {
+        let mut headers = HeaderMap::new();
+        headers.append(header::COOKIE, HeaderValue::from_static("mcm_csrf=abc123"));
+        headers.append(
+            header::COOKIE,
+            HeaderValue::from_static("mcm_session=sess_xyz"),
+        );
+        assert_eq!(
+            extract_cookie(&headers, CSRF_COOKIE_NAME).as_deref(),
+            Some("abc123")
+        );
+        assert_eq!(
+            extract_cookie(&headers, SESSION_COOKIE_NAME).as_deref(),
+            Some("sess_xyz")
         );
     }
 }
