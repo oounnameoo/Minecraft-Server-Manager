@@ -637,15 +637,49 @@ impl AuthStore {
         Ok(())
     }
 
-    pub fn build_session_cookie(&self, raw_token: &str, max_age_secs: i64) -> String {
-        let secure = if self.secure_cookies { "; Secure" } else { "" };
+    pub fn should_set_secure_cookie(&self, req_headers: &HeaderMap) -> bool {
+        if !self.secure_cookies {
+            return false;
+        }
+        if let Some(proto) = req_headers
+            .get("x-forwarded-proto")
+            .and_then(|v| v.to_str().ok())
+            && proto.trim().eq_ignore_ascii_case("http")
+        {
+            return false;
+        }
+        for hdr in [header::ORIGIN, header::REFERER] {
+            if let Some(val) = req_headers.get(hdr).and_then(|v| v.to_str().ok())
+                && val.trim().to_ascii_lowercase().starts_with("http://")
+            {
+                return false;
+            }
+        }
+        true
+    }
+
+    pub fn build_session_cookie_for(
+        &self,
+        req_headers: &HeaderMap,
+        raw_token: &str,
+        max_age_secs: i64,
+    ) -> String {
+        let secure = if self.should_set_secure_cookie(req_headers) {
+            "; Secure"
+        } else {
+            ""
+        };
         format!(
             "{SESSION_COOKIE_NAME}={raw_token}; Path=/; HttpOnly; SameSite=Lax; Max-Age={max_age_secs}{secure}"
         )
     }
 
-    pub fn build_csrf_cookie(&self, token: &str) -> String {
-        let secure = if self.secure_cookies { "; Secure" } else { "" };
+    pub fn build_csrf_cookie_for(&self, req_headers: &HeaderMap, token: &str) -> String {
+        let secure = if self.should_set_secure_cookie(req_headers) {
+            "; Secure"
+        } else {
+            ""
+        };
         format!("{CSRF_COOKIE_NAME}={token}; Path=/; SameSite=Lax{secure}")
     }
 }
@@ -756,9 +790,10 @@ pub async fn auth_middleware(
 
 pub async fn handle_csrf(
     axum::extract::State(auth): axum::extract::State<AuthStore>,
+    req_headers: HeaderMap,
 ) -> impl IntoResponse {
     let token = generate_random_hex(32);
-    let cookie = auth.build_csrf_cookie(&token);
+    let cookie = auth.build_csrf_cookie_for(&req_headers, &token);
     let mut headers = HeaderMap::new();
     headers.insert(header::SET_COOKIE, HeaderValue::from_str(&cookie).unwrap());
     (headers, Json(serde_json::json!({ "csrf_token": token })))
@@ -781,6 +816,7 @@ pub struct OnboardingReq {
 
 pub async fn handle_onboarding(
     axum::extract::State(auth): axum::extract::State<AuthStore>,
+    req_headers: HeaderMap,
     Json(req): Json<OnboardingReq>,
 ) -> Result<impl IntoResponse, ApiError> {
     let email = req.email.trim().to_lowercase();
@@ -792,7 +828,7 @@ pub async fn handle_onboarding(
     let hash = hash_password(&req.password)?;
     let user = auth.create_first_user(&email, &hash)?;
     let token = auth.create_session(&user.id)?;
-    let cookie = auth.build_session_cookie(&token, 7 * 24 * 3600);
+    let cookie = auth.build_session_cookie_for(&req_headers, &token, 7 * 24 * 3600);
     let mut headers = HeaderMap::new();
     headers.insert(header::SET_COOKIE, HeaderValue::from_str(&cookie).unwrap());
     Ok((StatusCode::CREATED, headers, Json(user)))
@@ -809,6 +845,7 @@ pub struct LoginReq {
 
 pub async fn handle_login(
     axum::extract::State(auth): axum::extract::State<AuthStore>,
+    req_headers: HeaderMap,
     Json(req): Json<LoginReq>,
 ) -> Result<impl IntoResponse, ApiError> {
     let email = req.email.trim().to_lowercase();
@@ -822,7 +859,7 @@ pub async fn handle_login(
         return Err(ApiError::unauthorized("invalid email or password"));
     }
     let token = auth.create_session(&user.id)?;
-    let cookie = auth.build_session_cookie(&token, 7 * 24 * 3600);
+    let cookie = auth.build_session_cookie_for(&req_headers, &token, 7 * 24 * 3600);
     let mut headers = HeaderMap::new();
     headers.insert(header::SET_COOKIE, HeaderValue::from_str(&cookie).unwrap());
     Ok((headers, Json(user)))
@@ -835,7 +872,7 @@ pub async fn handle_logout(
     if let Some(tok) = extract_cookie(&req_headers, SESSION_COOKIE_NAME) {
         let _ = auth.delete_session(&tok);
     }
-    let cookie = auth.build_session_cookie("", 0);
+    let cookie = auth.build_session_cookie_for(&req_headers, "", 0);
     let mut headers = HeaderMap::new();
     headers.insert(header::SET_COOKIE, HeaderValue::from_str(&cookie).unwrap());
     Ok((headers, Json(serde_json::json!({ "ok": true }))))
@@ -932,4 +969,45 @@ pub async fn handle_delete_user(
         return Err(ApiError::not_found("user not found"));
     }
     Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn secure_cookie_respects_http_proxy_and_origin_headers() {
+        let conn = Connection::open_in_memory().unwrap();
+        let store_https = AuthStore::new(Arc::new(Mutex::new(conn)), true);
+
+        let mut https_headers = HeaderMap::new();
+        https_headers.insert(
+            header::ORIGIN,
+            HeaderValue::from_static("https://mc.example.com"),
+        );
+        assert!(
+            store_https
+                .build_session_cookie_for(&https_headers, "tok", 60)
+                .contains("; Secure")
+        );
+
+        let mut http_origin = HeaderMap::new();
+        http_origin.insert(
+            header::ORIGIN,
+            HeaderValue::from_static("http://192.168.1.50:8080"),
+        );
+        assert!(
+            !store_https
+                .build_session_cookie_for(&http_origin, "tok", 60)
+                .contains("; Secure")
+        );
+
+        let mut http_proto = HeaderMap::new();
+        http_proto.insert("x-forwarded-proto", HeaderValue::from_static("http"));
+        assert!(
+            !store_https
+                .build_session_cookie_for(&http_proto, "tok", 60)
+                .contains("; Secure")
+        );
+    }
 }

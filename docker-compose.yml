@@ -17,7 +17,7 @@ services:
       MCM_BACKUP_DIR: /var/lib/mcm/backups
       MCM_DB_PATH: /var/lib/mcm/mcm.db
       MCM_PORT_RANGE: "25565-25575"
-      MCM_HTTP_ONLY: "${MCM_HTTP_ONLY:-false}"
+      MCM_HTTP_ONLY: "${MCM_HTTP_ONLY:-true}"
       MCM_SESSION_SECRET: "${MCM_SESSION_SECRET:-}"
 
 volumes:
